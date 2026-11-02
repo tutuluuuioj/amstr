@@ -1,0 +1,429 @@
+import React, { useState } from "react";
+import { RoundView, EntryView, formatYoctoNear } from "../services/near";
+import { Lock, Loader2, ExternalLink } from "lucide-react";
+import util from "tweetnacl-util";
+import { getPickSalt } from "../crypto/cvm";
+import { CONFIG } from "../config";
+
+interface BetSlipProps {
+  accountId: string | null;
+  round: RoundView | null;
+  entry: EntryView | null;
+  currentBlock: number | null;
+  selectedTiles: Set<number>;
+  onRemoveTile: (tileIndex: number) => void;
+  onDeploy: (stakeNear: string, referralCode?: string) => Promise<void>;
+  onClaim: () => Promise<void>;
+  onReclaimStorage: () => Promise<void>;
+  onRefundExpired: () => Promise<void>;
+  onConnectWallet: () => void;
+  isDeploying: boolean;
+  isViewingPastRound?: boolean;
+  onBackToLiveRound?: () => void;
+}
+
+export const BetSlip: React.FC<BetSlipProps> = ({
+  accountId,
+  round,
+  entry,
+  currentBlock,
+  selectedTiles,
+  onRemoveTile,
+  onDeploy,
+  onClaim,
+  onReclaimStorage,
+  onRefundExpired,
+  onConnectWallet,
+  isDeploying,
+  isViewingPastRound = false,
+  onBackToLiveRound,
+}) => {
+  const [stakeAmount, setStakeAmount] = useState<string>("0.1");
+  const [referralCode, setReferralCode] = useState<string>("");
+  const [isActionLoading, setIsActionLoading] = useState<boolean>(false);
+
+  const STAKE_PRESETS = ["0.1", "0.5", "1"];
+
+  const isConnected = !!accountId;
+  const isWindowClosed = currentBlock !== null && round ? currentBlock > round.close_height : false;
+  const isRoundOpen = round?.status === "Open" && !isWindowClosed;
+  const isSettled = round?.status === "Settled";
+  const isRevealing = round?.status === "Revealing";
+
+  // Check if player won or lost
+  let hasWon = false;
+  let hasLost = false;
+  if (isSettled && entry && round?.winning_tile !== null) {
+    const winningTile = round.winning_tile;
+    if (entry.mask !== null && entry.mask !== undefined) {
+      hasWon = (entry.mask & (1 << winningTile)) !== 0;
+      hasLost = !hasWon;
+    } else {
+      const localPick = accountId && round ? getPickSalt(round.round_id, accountId) : null;
+      if (localPick) {
+        hasWon = (localPick.mask & (1 << winningTile)) !== 0;
+        hasLost = !hasWon;
+      }
+    }
+  }
+
+  // Check timeout refund: only eligible if marked Refunded or after full on-chain timeout (+600 blocks)
+  const isTimeout =
+    round &&
+    round.status !== "Settled" &&
+    (round.status === "Refunded" ||
+      (currentBlock !== null && currentBlock > round.close_height + 600));
+
+  // Breakdown calculations
+  const stakeVal = parseFloat(stakeAmount) || 0;
+  const fee10Pct = (stakeVal * 0.1).toFixed(3);
+  const totalNear = (stakeVal + 0.01).toFixed(3); // stake + 0.01 NEAR entry storage
+
+  // Handle Deploy
+  const handleDeployClick = async () => {
+    if (!isConnected) {
+      onConnectWallet();
+      return;
+    }
+    await onDeploy(stakeAmount, referralCode.trim() || undefined);
+  };
+
+  // State: My Entry (already entered)
+  if (entry) {
+    return (
+      <div className="bg-[#1A1815] border border-[#2A2620] rounded-sm p-5 space-y-4">
+        <div className="flex items-center justify-between pb-3 border-b border-[#2A2620]">
+          <h3 className="font-fraunces text-base font-bold text-[#EDE6DA]">My Entry</h3>
+          <span className="font-mono text-xs text-[#8C8478]">Round #{round?.round_id}</span>
+        </div>
+
+        {/* Won State: gold "Won" with amount + gold Claim button */}
+        {hasWon && (
+          <div className="space-y-3 pt-1">
+            <div className="p-3 bg-[#E3C07A]/10 border border-[#E3C07A]/30 rounded-sm">
+              <div className="text-xs font-bold text-[#E3C07A] uppercase tracking-wider">Result</div>
+              <div className="font-fraunces text-xl font-black text-[#E3C07A] mt-0.5">
+                Won on Tile #{round?.winning_tile}
+              </div>
+              <div className="font-mono text-xs text-[#EDE6DA] mt-1">
+                Pot share: {formatYoctoNear(round?.total_net || "0", 3)} NEAR
+              </div>
+            </div>
+
+            {entry.claimed ? (
+              <div className="p-3 bg-[#5FA88A]/10 border border-[#5FA88A]/30 rounded-sm space-y-1.5 text-center">
+                <div className="font-fraunces text-sm font-bold text-[#5FA88A]">
+                  Claimed {formatYoctoNear(round?.total_net || "0", 2)} NEAR
+                </div>
+                <div className="flex items-center justify-center space-x-1 text-[11px] font-mono">
+                  <span className="text-[#8C8478]">Payout sent to wallet</span>
+                  <span>•</span>
+                  <a
+                    href={`${CONFIG.EXPLORER_URL}/address/${accountId}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-[#C8763A] hover:underline inline-flex items-center space-x-0.5"
+                  >
+                    <span>View on Nearblocks</span>
+                    <ExternalLink className="w-2.5 h-2.5 ml-0.5" />
+                  </a>
+                </div>
+              </div>
+            ) : (
+              <button
+                onClick={async () => {
+                  setIsActionLoading(true);
+                  try {
+                    await onClaim();
+                  } finally {
+                    setIsActionLoading(false);
+                  }
+                }}
+                disabled={isActionLoading}
+                className="w-full py-2.5 rounded-sm bg-[#E3C07A] hover:bg-[#ebd299] text-[#0E0D0B] font-bold text-xs transition-colors flex items-center justify-center space-x-1.5 shadow-sm"
+              >
+                {isActionLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
+                <span>Claim Payout</span>
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* Lost State: brick-red "Lost" with no glow */}
+        {hasLost && (
+          <div className="space-y-3 pt-1">
+            <div className="p-3 bg-[#C2483D]/10 border border-[#C2483D]/30 rounded-sm">
+              <div className="text-xs font-bold text-[#C2483D] uppercase tracking-wider">Result</div>
+              <div className="font-fraunces text-lg font-bold text-[#C2483D] mt-0.5">
+                Lost (Tile #{round?.winning_tile})
+              </div>
+            </div>
+
+            {entry.claimed ? (
+              <div className="p-3 bg-[#1A1815] border border-[#2A2620] rounded-sm space-y-1.5 text-center">
+                <div className="font-mono text-xs font-semibold text-[#8C8478]">
+                  Storage Deposit Reclaimed (0.01 NEAR)
+                </div>
+                <div className="flex items-center justify-center space-x-1 text-[11px] font-mono">
+                  <span className="text-[#8C8478]">Returned to wallet</span>
+                  <span>•</span>
+                  <a
+                    href={`${CONFIG.EXPLORER_URL}/address/${accountId}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-[#C8763A] hover:underline inline-flex items-center space-x-0.5"
+                  >
+                    <span>View on Nearblocks</span>
+                    <ExternalLink className="w-2.5 h-2.5 ml-0.5" />
+                  </a>
+                </div>
+              </div>
+            ) : (
+              <button
+                onClick={async () => {
+                  setIsActionLoading(true);
+                  try {
+                    await onReclaimStorage();
+                  } finally {
+                    setIsActionLoading(false);
+                  }
+                }}
+                disabled={isActionLoading}
+                className="w-full py-2.5 rounded-sm border border-[#2A2620] hover:border-[#8C8478] text-[#EDE6DA] font-medium text-xs transition-colors flex items-center justify-center space-x-1.5"
+              >
+                {isActionLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
+                <span>Reclaim 0.01 NEAR Storage</span>
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* Timeout Expired State: copper Refund button */}
+        {isTimeout && !entry.refunded && !hasWon && !hasLost && (
+          <div className="space-y-3 pt-1">
+            <div className="p-3 bg-[#1A1815] border border-[#C8763A]/40 rounded-sm">
+              <div className="text-xs font-bold text-[#C8763A] uppercase tracking-wider">Timeout Reached</div>
+              <div className="text-xs text-[#EDE6DA] mt-1">
+                Round did not settle in time. 100% of your deposit is refundable with 0 fees.
+              </div>
+            </div>
+
+            <button
+              onClick={async () => {
+                setIsActionLoading(true);
+                try {
+                  await onRefundExpired();
+                } finally {
+                  setIsActionLoading(false);
+                }
+              }}
+              disabled={isActionLoading}
+              className="w-full py-2.5 rounded-sm bg-[#C8763A] hover:bg-[#d88244] text-[#0E0D0B] font-bold text-xs transition-colors flex items-center justify-center space-x-1.5"
+            >
+              {isActionLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
+              <span>Refund 100% ({formatYoctoNear(entry.gross_stake)} NEAR)</span>
+            </button>
+          </div>
+        )}
+
+        {/* Sealed State (Round Open or Revealing) */}
+        {!hasWon && !hasLost && !isTimeout && (
+          <div className="space-y-3 pt-1">
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-[#8C8478]">Selected Picks:</span>
+              <span className="font-mono text-sm tracking-widest text-[#C8763A]">••••••••</span>
+            </div>
+
+            <div className="space-y-1.5 p-3 bg-[#0E0D0B] border border-[#2A2620] rounded-sm text-xs font-mono">
+              <div className="flex justify-between text-[#8C8478]">
+                <span>Stake:</span>
+                <span className="text-[#EDE6DA]">{formatYoctoNear(entry.gross_stake)} NEAR</span>
+              </div>
+              <div className="flex justify-between text-[#8C8478]">
+                <span>Net in Pot:</span>
+                <span className="text-[#EDE6DA]">{formatYoctoNear(entry.net_stake)} NEAR</span>
+              </div>
+              <div className="pt-1.5 border-t border-[#2A2620] text-[10px] text-[#8C8478] truncate">
+                Commit: {util.encodeBase64(new Uint8Array(entry.commit))}
+              </div>
+            </div>
+
+            <div className="text-[11px] text-[#8C8478] leading-tight">
+              {isRevealing
+                ? "TEE is decrypting picks and calculating winning tile..."
+                : "Picks are sealed and hidden. Only the TEE can decrypt them once the deposit window closes."}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // State: Bet Slip (placing a bet)
+  return (
+    <div className="bg-[#1A1815] border border-[#2A2620] rounded-sm p-5 space-y-4">
+      <div className="flex items-center justify-between pb-3 border-b border-[#2A2620]">
+        <h3 className="font-fraunces text-base font-bold text-[#EDE6DA]">Bet Slip</h3>
+        <span className="text-xs font-mono text-[#8C8478]">
+          {selectedTiles.size} {selectedTiles.size === 1 ? "tile" : "tiles"}
+        </span>
+      </div>
+
+      {/* Historical / Closed Round Notice */}
+      {isViewingPastRound && (
+        <div className="p-3 bg-[#0E0D0B] border border-[#E3C07A]/40 rounded-sm text-xs text-[#E3C07A] flex items-center space-x-2">
+          <span className="w-2 h-2 rounded-full bg-[#E3C07A] flex-shrink-0 animate-pulse"></span>
+          <span>Viewing past Round #{round?.round_id}. Betting is closed for historical rounds.</span>
+        </div>
+      )}
+
+      {/* Selected tiles as small copper chips */}
+      <div className={isViewingPastRound || !isRoundOpen ? "opacity-25 pointer-events-none" : ""}>
+        <div className="text-[11px] text-[#8C8478] uppercase tracking-wider mb-1.5">
+          Selected Tiles
+        </div>
+        {isViewingPastRound ? (
+          <div className="text-xs text-[#8C8478] italic">No active selection • Return to live round to place bets</div>
+        ) : selectedTiles.size > 0 ? (
+          <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto">
+            {Array.from(selectedTiles).sort((a, b) => a - b).map((tile) => (
+              <span
+                key={tile}
+                onClick={() => {
+                  if (isViewingPastRound || !isRoundOpen) return;
+                  onRemoveTile(tile);
+                }}
+                className={`px-2 py-0.5 rounded-sm bg-[#C8763A]/10 border border-[#C8763A]/40 text-[#C8763A] font-mono text-xs transition-colors ${
+                  isViewingPastRound || !isRoundOpen ? "cursor-not-allowed" : "cursor-pointer hover:bg-[#C8763A]/20"
+                }`}
+                title={isViewingPastRound || !isRoundOpen ? "Selection locked" : "Click to remove"}
+              >
+                #{tile} ×
+              </span>
+            ))}
+          </div>
+        ) : (
+          <div className="text-xs text-[#8C8478] italic">Click tiles on the grid to select</div>
+        )}
+      </div>
+
+      {/* Stake Amount Input with quick buttons (0.1, 0.5, 1) */}
+      <div className={`space-y-2 ${isViewingPastRound || !isRoundOpen ? "opacity-25 pointer-events-none" : ""}`}>
+        <label className="block text-[11px] text-[#8C8478] uppercase tracking-wider">
+          Stake Amount (NEAR)
+        </label>
+        <div className="flex items-center space-x-2">
+          {STAKE_PRESETS.map((p) => (
+            <button
+              key={p}
+              type="button"
+              disabled={isViewingPastRound || !isRoundOpen}
+              onClick={() => setStakeAmount(p)}
+              className={`flex-1 py-1 px-2 rounded-sm border text-xs font-mono transition-colors ${
+                stakeAmount === p
+                  ? "border-[#C8763A] text-[#C8763A] bg-[#C8763A]/10"
+                  : "border-[#2A2620] text-[#8C8478] hover:text-[#EDE6DA]"
+              } disabled:cursor-not-allowed`}
+            >
+              {p}
+            </button>
+          ))}
+        </div>
+        <input
+          type="number"
+          step="0.01"
+          min="0.01"
+          max="20"
+          disabled={isViewingPastRound || !isRoundOpen}
+          value={stakeAmount}
+          onChange={(e) => setStakeAmount(e.target.value)}
+          className="w-full bg-[#0E0D0B] border border-[#2A2620] focus:border-[#C8763A] rounded-sm px-3 py-1.5 text-xs font-mono text-[#EDE6DA] focus:outline-none disabled:cursor-not-allowed"
+        />
+      </div>
+
+      {/* Optional referral code field */}
+      <div className={isViewingPastRound || !isRoundOpen ? "opacity-25 pointer-events-none" : ""}>
+        <label className="block text-[11px] text-[#8C8478] uppercase tracking-wider mb-1">
+          Referral Code (Optional)
+        </label>
+        <input
+          type="text"
+          disabled={isViewingPastRound || !isRoundOpen}
+          value={referralCode}
+          onChange={(e) => setReferralCode(e.target.value)}
+          placeholder="e.g. alice.testnet"
+          className="w-full bg-[#0E0D0B] border border-[#2A2620] focus:border-[#C8763A] rounded-sm px-3 py-1.5 text-xs font-mono text-[#EDE6DA] focus:outline-none placeholder-[#8C8478]/50 disabled:cursor-not-allowed"
+        />
+      </div>
+
+      {/* Fee breakdown in muted mono, total in #EDE6DA */}
+      <div className={`pt-2 border-t border-[#2A2620] space-y-1 font-mono text-xs ${
+        isViewingPastRound || !isRoundOpen ? "opacity-25" : ""
+      }`}>
+        <div className="flex justify-between text-[#8C8478]">
+          <span>Stake:</span>
+          <span>{stakeVal.toFixed(3)} NEAR</span>
+        </div>
+        <div className="flex justify-between text-[#8C8478]">
+          <span>Protocol Fee (10%):</span>
+          <span>{fee10Pct} NEAR</span>
+        </div>
+        <div className="flex justify-between text-[#8C8478]">
+          <span>Storage Deposit (Refundable):</span>
+          <span>0.010 NEAR</span>
+        </div>
+        <div className="flex justify-between text-[#EDE6DA] font-semibold pt-1 border-t border-[#2A2620]">
+          <span>Total Required:</span>
+          <span>{totalNear} NEAR</span>
+        </div>
+      </div>
+
+      {/* Big copper button: "Back to Live Round" if past round, otherwise "Encrypt & Deploy" or phase status */}
+      {isViewingPastRound ? (
+        <button
+          type="button"
+          onClick={() => onBackToLiveRound?.()}
+          className="w-full py-3 rounded-sm bg-[#C8763A] hover:bg-[#d88244] text-[#0E0D0B] font-bold text-xs tracking-wider transition-colors uppercase flex items-center justify-center space-x-2 shadow-md"
+        >
+          <span>← Back to Live Round to Play</span>
+        </button>
+      ) : (
+        <button
+          type="button"
+          onClick={handleDeployClick}
+          disabled={isDeploying || !isRoundOpen}
+          className="w-full py-3 rounded-sm bg-[#C8763A] hover:bg-[#d88244] disabled:opacity-40 text-[#0E0D0B] font-bold text-xs tracking-wider transition-colors uppercase flex items-center justify-center space-x-2"
+        >
+          {isDeploying ? (
+            <>
+              <Loader2 className="w-4 h-4 animate-spin" />
+              <span>Encrypting & Deploying...</span>
+            </>
+          ) : !isRoundOpen ? (
+            isWindowClosed && round?.status === "Open" ? (
+              <span>Closing…</span>
+            ) : isRevealing ? (
+              <span>Drawing…</span>
+            ) : (
+              <span>Next round opens soon…</span>
+            )
+          ) : !isConnected ? (
+            <span>Connect Wallet to Deploy</span>
+          ) : (
+            <span>Encrypt & Deploy</span>
+          )}
+        </button>
+      )}
+
+      {/* Under it: lock line or historical note */}
+      <div className="flex items-center justify-center space-x-1.5 text-[11px] text-[#8C8478] pt-1">
+        <Lock className="w-3 h-3 text-[#8C8478] flex-shrink-0" />
+        <span>
+          {isViewingPastRound
+            ? "Deposits are only accepted on the active live round."
+            : "Picks are encrypted in your browser. Only the TEE can decrypt them."}
+        </span>
+      </div>
+    </div>
+  );
+};

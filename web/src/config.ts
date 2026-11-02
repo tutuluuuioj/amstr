@@ -1,0 +1,22 @@
+export const CONFIG = {
+  NETWORK_ID: "testnet",
+  CONTRACT_ID: "game.amstr-admin-zxlhcx.testnet",
+  TOKEN_CONTRACT_ID: "token.amstr-admin-zxlhcx.testnet",
+  TREASURY_CONTRACT_ID: "treasury.amstr-admin-zxlhcx.testnet",
+  STAKING_CONTRACT_ID: "staking.amstr-admin-zxlhcx.testnet",
+  CVM_URL: typeof window !== "undefined" && window.location.hostname === "localhost"
+    ? "/api/cvm"
+    : "https://2dba4d4f68ab082e126801c1271d5fbc1abff3bd-3000.dstack-pha-prod5.phala.network",
+  CVM_DIRECT_URL: "https://2dba4d4f68ab082e126801c1271d5fbc1abff3bd-3000.dstack-pha-prod5.phala.network",
+  CVM_ID: "10d1a977-f439-4128-8a73-f173594d6e45",
+  PHALA_DASHBOARD_URL: "https://cloud.phala.network",
+  RPC_ENDPOINTS: [
+    ...(typeof window !== "undefined" && window.location.hostname === "localhost" ? ["/api/near-rpc"] : []),
+    "https://near-testnet.drpc.org",
+  ],
+  EXPLORER_URL: "https://testnet.nearblocks.io",
+  FAUCET_URL: "https://near-faucet.io",
+  RTMR3_EXPECTED: "68c94c9c7afec0e3fd3f47a35e4ee1f2e3c5c2a13d8deefce09da1b51158f9bd",
+  MR_CONFIG_ID_EXPECTED: "018eb74789bcf4a2980751c13e5fb3ee658b23ebdb65d6dfe45e5f24d4691a1587000000000000000000000000000000",
+  ENABLE_DEV_ACCOUNTS: typeof window !== "undefined" && new URLSearchParams(window.location.search).get("dev") === "true",
+};

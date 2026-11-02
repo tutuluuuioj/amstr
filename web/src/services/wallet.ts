@@ -1,0 +1,501 @@
+import { setupWalletSelector, WalletSelector, AccountState } from "@near-wallet-selector/core";
+import { setupModal, WalletSelectorModal } from "@near-wallet-selector/modal-ui";
+import { setupMeteorWallet } from "@near-wallet-selector/meteor-wallet";
+import { setupHereWallet } from "@near-wallet-selector/here-wallet";
+import { setupMyNearWallet } from "@near-wallet-selector/my-near-wallet";
+import { connect, keyStores, KeyPair } from "near-api-js";
+import { CONFIG } from "../config";
+import { parseNearToYocto, parseAmstrToYocto, nearRpc } from "./near";
+
+const DEV_KEY = (typeof import.meta !== "undefined" && (import.meta as any).env?.VITE_DEV_PRIVATE_KEY) || "";
+
+export interface WalletContextState {
+  selector: WalletSelector | null;
+  modal: WalletSelectorModal | null;
+  accounts: AccountState[];
+  accountId: string | null;
+}
+
+class WalletService {
+  private selector: WalletSelector | null = null;
+  private modal: WalletSelectorModal | null = null;
+  private accounts: AccountState[] = [];
+  private devAccountId: string | null = null;
+  private listeners: ((state: WalletContextState) => void)[] = [];
+
+  public async init(): Promise<WalletContextState> {
+    const savedDev = localStorage.getItem("amstr_dev_account");
+    if (savedDev) {
+      this.devAccountId = savedDev;
+    }
+
+    if (this.selector) {
+      return this.getState();
+    }
+
+    try {
+      this.selector = await setupWalletSelector({
+        network: CONFIG.NETWORK_ID as any,
+        modules: [
+          setupMeteorWallet(),
+          setupHereWallet(),
+          setupMyNearWallet(),
+        ],
+      });
+
+      this.modal = setupModal(this.selector, {
+        contractId: CONFIG.CONTRACT_ID,
+        description: "Connect your NEAR Testnet wallet to play AMSTR",
+      });
+
+      const state = this.selector.store.getState();
+      this.accounts = state.accounts;
+
+      this.selector.store.observable.subscribe((next) => {
+        this.accounts = next.accounts;
+        this.notify();
+      });
+    } catch (err) {
+      console.warn("WalletSelector setup warning:", err);
+    }
+
+    return this.getState();
+  }
+
+  public connectDevAccount(accountId: string): void {
+    this.devAccountId = accountId;
+    localStorage.setItem("amstr_dev_account", accountId);
+    this.notify();
+  }
+
+  public getState(): WalletContextState {
+    const accountId =
+      this.devAccountId ||
+      this.accounts.find((a) => a.active)?.accountId ||
+      this.accounts[0]?.accountId ||
+      null;
+    return {
+      selector: this.selector,
+      modal: this.modal,
+      accounts: this.accounts,
+      accountId,
+    };
+  }
+
+  public subscribe(cb: (state: WalletContextState) => void): () => void {
+    this.listeners.push(cb);
+    cb(this.getState());
+    return () => {
+      this.listeners = this.listeners.filter((l) => l !== cb);
+    };
+  }
+
+  private notify(): void {
+    const state = this.getState();
+    for (const cb of this.listeners) {
+      cb(state);
+    }
+  }
+
+  public showModal(): void {
+    if (this.modal) {
+      this.modal.show();
+    }
+  }
+
+  public async signInWithWallet(walletId: string = "meteor-wallet"): Promise<void> {
+    if (this.devAccountId) {
+      this.devAccountId = null;
+      localStorage.removeItem("amstr_dev_account");
+    }
+    if (!this.selector) {
+      this.showModal();
+      return;
+    }
+    try {
+      const wallet = await this.selector.wallet(walletId);
+      await (wallet as any).signIn({
+        contractId: CONFIG.CONTRACT_ID,
+        methodNames: ["deploy", "claim", "reclaim_storage", "bind_referrer", "refund_expired"],
+      });
+    } catch (e: any) {
+      console.warn("Direct wallet sign-in fallback to modal:", e);
+      this.showModal();
+    }
+  }
+
+  public async signOut(): Promise<void> {
+    if (this.devAccountId) {
+      this.devAccountId = null;
+      localStorage.removeItem("amstr_dev_account");
+      this.notify();
+      return;
+    }
+    if (!this.selector) return;
+    const wallet = await this.selector.wallet();
+    await wallet.signOut();
+  }
+
+  private async getNearAccount(accountId: string) {
+    if (!DEV_KEY) {
+      throw new Error("No private key configured for local dev account. Please connect via standard NEAR wallet (Meteor, Here, MyNearWallet) or set VITE_DEV_PRIVATE_KEY in your local .env.");
+    }
+    const keyStore = new keyStores.InMemoryKeyStore();
+    const kp = KeyPair.fromString(DEV_KEY);
+    await keyStore.setKey("testnet", accountId, kp);
+    const nodeUrl = typeof window !== "undefined"
+      ? `${window.location.origin}/api/near-rpc`
+      : "https://near-testnet.drpc.org";
+    const near = await connect({
+      networkId: "testnet",
+      keyStore,
+      nodeUrl,
+    });
+    return await near.account(accountId);
+  }
+
+  /**
+   * Bind referrer before deploy
+   */
+  public async bindReferrer(referrerId: string): Promise<any> {
+    if (this.devAccountId) {
+      const account = await this.getNearAccount(this.devAccountId);
+      return await account.functionCall({
+        contractId: CONFIG.CONTRACT_ID,
+        methodName: "bind_referrer",
+        args: { referrer: referrerId },
+        gas: 30000000000000n,
+      });
+    }
+
+    if (!this.selector) throw new Error("Wallet selector not initialized");
+    const wallet = await this.selector.wallet();
+
+    return await wallet.signAndSendTransaction({
+      receiverId: CONFIG.CONTRACT_ID,
+      actions: [
+        {
+          type: "FunctionCall",
+          params: {
+            methodName: "bind_referrer",
+            args: { referrer: referrerId },
+            gas: "30000000000000",
+            deposit: "0",
+          },
+        },
+      ],
+    });
+  }
+
+  /**
+   * Requirement 1 & 5: Place confidential bet
+   * Checks attached deposit = stake + 0.01 NEAR entry storage
+   */
+  public async deploy(
+    roundId: number,
+    ciphertextBase64: string,
+    commitBase64: string,
+    stakeNear: number | string
+  ): Promise<any> {
+    const stakeYocto = BigInt(parseNearToYocto(stakeNear));
+    const storageYocto = 10_000_000_000_000_000_000_000n; // 0.01 NEAR
+    const totalDeposit = stakeYocto + storageYocto;
+
+    if (this.devAccountId) {
+      const account = await this.getNearAccount(this.devAccountId);
+      return await account.functionCall({
+        contractId: CONFIG.CONTRACT_ID,
+        methodName: "deploy",
+        args: {
+          round_id: roundId,
+          ciphertext: ciphertextBase64,
+          commit: commitBase64,
+        },
+        gas: 150000000000000n,
+        attachedDeposit: totalDeposit as any,
+      });
+    }
+
+    if (!this.selector) throw new Error("Wallet selector not initialized");
+    const wallet = await this.selector.wallet();
+
+    return await wallet.signAndSendTransaction({
+      receiverId: CONFIG.CONTRACT_ID,
+      actions: [
+        {
+          type: "FunctionCall",
+          params: {
+            methodName: "deploy",
+            args: {
+              round_id: roundId,
+              ciphertext: ciphertextBase64,
+              commit: commitBase64,
+            },
+            gas: "150000000000000", // 150 TGas
+            deposit: totalDeposit.toString(),
+          },
+        },
+      ],
+    });
+  }
+
+  private async executeTransaction(wallet: any, tx: { receiverId: string; actions: any[] }): Promise<any> {
+    if (wallet.id === "meteor-wallet" && typeof wallet.signAndSendTransactions === "function") {
+      try {
+        const res = await wallet.signAndSendTransactions({ transactions: [tx] });
+        return Array.isArray(res) ? res[0] : res;
+      } catch (err: any) {
+        console.warn("wallet.signAndSendTransactions fallback:", err);
+      }
+    }
+    return await wallet.signAndSendTransaction(tx);
+  }
+
+  /**
+   * Requirement 5: One-click claim for winners
+   */
+  public async claim(roundIds: number[]): Promise<any> {
+    if (this.devAccountId) {
+      const account = await this.getNearAccount(this.devAccountId);
+      return await account.functionCall({
+        contractId: CONFIG.CONTRACT_ID,
+        methodName: "claim",
+        args: { round_ids: roundIds },
+        gas: 250000000000000n,
+      });
+    }
+
+    if (!this.selector) throw new Error("Wallet selector not initialized");
+    const wallet = await this.selector.wallet();
+
+    // Ensure recipient is registered on the AMSTR fungible token contract so FT transfers succeed
+    const activeAccount = this.getState().accountId;
+    if (activeAccount) {
+      try {
+        const storageBal = await nearRpc.callViewFunction<any>(
+          CONFIG.TOKEN_CONTRACT_ID,
+          "storage_balance_of",
+          { account_id: activeAccount }
+        );
+        if (!storageBal) {
+          console.log(`Registering token storage for ${activeAccount}...`);
+          await this.executeTransaction(wallet, {
+            receiverId: CONFIG.TOKEN_CONTRACT_ID,
+            actions: [
+              {
+                type: "FunctionCall",
+                params: {
+                  methodName: "storage_deposit",
+                  args: { account_id: activeAccount, registration_only: true },
+                  gas: "30000000000000",
+                  deposit: "1250000000000000000000", // 0.00125 NEAR
+                },
+              },
+            ],
+          });
+        }
+      } catch (e) {
+        console.warn("Token storage pre-check notice:", e);
+      }
+    }
+
+    return await this.executeTransaction(wallet, {
+      receiverId: CONFIG.CONTRACT_ID,
+      actions: [
+        {
+          type: "FunctionCall",
+          params: {
+            methodName: "claim",
+            args: { round_ids: roundIds },
+            gas: "250000000000000", // 250 TGas
+            deposit: "0",
+          },
+        },
+      ],
+    });
+  }
+
+  /**
+   * Requirement 5: One-click storage reclaim for losers
+   */
+  public async reclaimStorage(roundIds: number[]): Promise<any> {
+    if (this.devAccountId) {
+      const account = await this.getNearAccount(this.devAccountId);
+      return await account.functionCall({
+        contractId: CONFIG.CONTRACT_ID,
+        methodName: "reclaim_storage",
+        args: { round_ids: roundIds },
+        gas: 150000000000000n,
+      });
+    }
+
+    if (!this.selector) throw new Error("Wallet selector not initialized");
+    const wallet = await this.selector.wallet();
+
+    return await this.executeTransaction(wallet, {
+      receiverId: CONFIG.CONTRACT_ID,
+      actions: [
+        {
+          type: "FunctionCall",
+          params: {
+            methodName: "reclaim_storage",
+            args: { round_ids: roundIds },
+            gas: "150000000000000",
+            deposit: "0",
+          },
+        },
+      ],
+    });
+  }
+
+  /**
+   * Requirement 5: One-click refund for expired rounds
+   */
+  public async refundExpired(roundId: number, limit = 50): Promise<any> {
+    if (this.devAccountId) {
+      const account = await this.getNearAccount(this.devAccountId);
+      return await account.functionCall({
+        contractId: CONFIG.CONTRACT_ID,
+        methodName: "refund_expired",
+        args: { round_id: roundId, limit },
+        gas: 200000000000000n,
+      });
+    }
+
+    if (!this.selector) throw new Error("Wallet selector not initialized");
+    const wallet = await this.selector.wallet();
+
+    return await this.executeTransaction(wallet, {
+      receiverId: CONFIG.CONTRACT_ID,
+      actions: [
+        {
+          type: "FunctionCall",
+          params: {
+            methodName: "refund_expired",
+            args: { round_id: roundId, limit },
+            gas: "200000000000000",
+            deposit: "0",
+          },
+        },
+      ],
+    });
+  }
+
+  /**
+   * Staking: ft_transfer_call on AMSTR token contract to staking contract
+   */
+  public async stake(amountAmstr: string): Promise<any> {
+    const yocto = parseAmstrToYocto(amountAmstr);
+    if (BigInt(yocto) <= 0n) throw new Error("Amount must be greater than 0");
+
+    if (this.devAccountId) {
+      const account = await this.getNearAccount(this.devAccountId);
+      return await account.functionCall({
+        contractId: CONFIG.TOKEN_CONTRACT_ID,
+        methodName: "ft_transfer_call",
+        args: {
+          receiver_id: CONFIG.STAKING_CONTRACT_ID,
+          amount: yocto,
+          msg: "",
+        },
+        gas: 60000000000000n, // 60 TGas
+        attachedDeposit: 1n, // 1 yoctoNEAR required by NEP-141
+      });
+    }
+
+    if (!this.selector) throw new Error("Wallet selector not initialized");
+    const wallet = await this.selector.wallet();
+
+    return await this.executeTransaction(wallet, {
+      receiverId: CONFIG.TOKEN_CONTRACT_ID,
+      actions: [
+        {
+          type: "FunctionCall",
+          params: {
+            methodName: "ft_transfer_call",
+            args: {
+              receiver_id: CONFIG.STAKING_CONTRACT_ID,
+              amount: yocto,
+              msg: "",
+            },
+            gas: "60000000000000",
+            deposit: "1",
+          },
+        },
+      ],
+    });
+  }
+
+  /**
+   * Unstaking: unstake(amount) on staking contract
+   */
+  public async unstake(amountAmstr: string): Promise<any> {
+    const yocto = parseAmstrToYocto(amountAmstr);
+    if (BigInt(yocto) <= 0n) throw new Error("Amount must be greater than 0");
+
+    if (this.devAccountId) {
+      const account = await this.getNearAccount(this.devAccountId);
+      return await account.functionCall({
+        contractId: CONFIG.STAKING_CONTRACT_ID,
+        methodName: "unstake",
+        args: { amount: yocto },
+        gas: 60000000000000n,
+        attachedDeposit: 0n,
+      });
+    }
+
+    if (!this.selector) throw new Error("Wallet selector not initialized");
+    const wallet = await this.selector.wallet();
+
+    return await this.executeTransaction(wallet, {
+      receiverId: CONFIG.STAKING_CONTRACT_ID,
+      actions: [
+        {
+          type: "FunctionCall",
+          params: {
+            methodName: "unstake",
+            args: { amount: yocto },
+            gas: "60000000000000",
+            deposit: "0",
+          },
+        },
+      ],
+    });
+  }
+
+  /**
+   * Claim Yield: claim_rewards() on staking contract
+   */
+  public async claimStakingYield(): Promise<any> {
+    if (this.devAccountId) {
+      const account = await this.getNearAccount(this.devAccountId);
+      return await account.functionCall({
+        contractId: CONFIG.STAKING_CONTRACT_ID,
+        methodName: "claim_rewards",
+        args: {},
+        gas: 60000000000000n,
+        attachedDeposit: 0n,
+      });
+    }
+
+    if (!this.selector) throw new Error("Wallet selector not initialized");
+    const wallet = await this.selector.wallet();
+
+    return await this.executeTransaction(wallet, {
+      receiverId: CONFIG.STAKING_CONTRACT_ID,
+      actions: [
+        {
+          type: "FunctionCall",
+          params: {
+            methodName: "claim_rewards",
+            args: {},
+            gas: "60000000000000",
+            deposit: "0",
+          },
+        },
+      ],
+    });
+  }
+}
+
+export const walletService = new WalletService();

@@ -1,0 +1,23 @@
+[Unit]
+Description=AMSTR Autonomous Round Keeper Service
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/amstr/cvm
+ExecStart=/usr/bin/npx tsx src/autonomous-runner.ts
+Restart=always
+RestartSec=5
+KillMode=process
+Environment=NODE_ENV=production
+StandardOutput=append:/var/log/amstr-keeper.log
+StandardError=append:/var/log/amstr-keeper-error.log
+
+# Resource Limits
+LimitNOFILE=65535
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target
