@@ -102,6 +102,8 @@ All smart contracts are live, verified, and operational on **NEAR Testnet**:
 | **Treasury & Buyback** | `treasury.amstr-admin-zxlhcx.testnet` | [View on NearBlocks](https://testnet.nearblocks.io/address/treasury.amstr-admin-zxlhcx.testnet) |
 | **AMSTR Staking Pool** | `staking.amstr-admin-zxlhcx.testnet` | [View on NearBlocks](https://testnet.nearblocks.io/address/staking.amstr-admin-zxlhcx.testnet) |
 | **Phala Intel TDX CVM** | `10d1a977-f439-4128-8a73-f173594d6e45` | [Live Enclave Gateway](https://2dba4d4f68ab082e126801c1271d5fbc1abff3bd-3000.dstack-pha-prod5.phala.network/health) |
+| **Live Web dApp (Fly.io)** | `amstr-web` | [https://amstr-web.fly.dev](https://amstr-web.fly.dev) |
+| **Autonomous Keeper (Fly.io)** | `amstr-keeper` | [https://amstr-keeper.fly.dev/health](https://amstr-keeper.fly.dev/health) |
 
 ---
 
