@@ -2,6 +2,7 @@ import { connect, keyStores, KeyPair, utils, transactions } from "near-api-js";
 import dotenv from "dotenv";
 import path from "path";
 import fs from "fs";
+import http from "http";
 import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -540,6 +541,26 @@ class AutonomousRoundRunnerService {
 }
 
 async function main() {
+  const httpPort = parseInt(process.env.PORT || "8080", 10);
+  const server = http.createServer((req, res) => {
+    if (req.url === "/health" || req.url === "/") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        status: "ok",
+        service: "amstr-autonomous-keeper",
+        contractId: CONTRACT_ID,
+        adminId: ADMIN_ID,
+        timestamp: Date.now()
+      }));
+    } else {
+      res.writeHead(404);
+      res.end();
+    }
+  });
+  server.listen(httpPort, "0.0.0.0", () => {
+    console.log(`[Health Server] Listening on port ${httpPort}`);
+  });
+
   const runner = new AutonomousRoundRunnerService();
   await runner.init();
   await runner.runLoop();
