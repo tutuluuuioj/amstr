@@ -5,7 +5,7 @@
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node -e 'try { require(\"fs\").copyFileSync(\"src/settledSeeds.json\", \"dist/settledSeeds.json\"); } catch(e){}'",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
     "test": "tsc && node --test dist/**/*.test.js"

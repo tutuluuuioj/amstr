@@ -20,6 +20,8 @@ const SEED_REGISTRY: Record<string, string> = {
   "132": "oL9MP3H8Orn24mlMJktmVOz7ZSuTzH0QYHIV9Sbblkc=",
   "133": "abdE+XKNLwdLXK31RJ3dNEGn7SgSPclb8r/1QNJy0tY=",
   "134": "9S6892p23/GV39pKZEF6dEavhw/Ik6Evp/fYNE+5BWA=",
+  "255": "WB50geewWnFJjGTpuy2ggONv+LCK73tHU+T9zvaZ+YY=",
+  "257": "4cb05WkKnSUHZc9ALWSazDUGPFCvqdOPbwVaL0xhpGE=",
 };
 
 const KNOWN_SETTLE_TXS: Record<number, string> = {
@@ -32,6 +34,8 @@ const KNOWN_SETTLE_TXS: Record<number, string> = {
   164: "HmJLcV9e6Pr6iNqwLjMgHtTz5G7bDSsbGGSsfrJoqA3E",
   165: "ArgpPXkEAS8cn3dXnuB4qjXhUU2tXD9BkhXcnzWqooSQ",
   166: "GuFQM9HzoVdiddG19Rz7sVNmxUQK1nJFYXiQ2bseySFF",
+  255: "GDRXxXDULatw2hBbhztP1nqryeUfLZott8MgmiUSM1dB",
+  257: "H5isWM8jbFCajsUDLhPbEShF6snTbDzbRQq1QjEs73yV",
 };
 
 export const FairnessModal: React.FC<FairnessModalProps> = ({ round, isOpen, onClose }) => {
@@ -80,7 +84,7 @@ export const FairnessModal: React.FC<FairnessModalProps> = ({ round, isOpen, onC
       return;
     }
 
-    // Auto-fill revealed enclave seed from on-chain round_settled event or known seeds
+    // 1. Check local storage and hardcoded registry
     let discoveredSeed =
       (typeof window !== "undefined" ? localStorage.getItem(`amstr_seed_${round.round_id}`) : null) ||
       SEED_REGISTRY[round.round_id] ||
@@ -94,13 +98,16 @@ export const FairnessModal: React.FC<FairnessModalProps> = ({ round, isOpen, onC
       return;
     }
 
-    // Try dynamic fetch from /settledSeeds.json (allows new keeper seeds without rebuild)
-    fetch("/settledSeeds.json?t=" + Date.now())
-      .then((res) => (res.ok ? res.json() : {}))
-      .then((seedsMap: Record<string, string>) => {
-        const found = seedsMap[round.round_id] || seedsMap[String(round.round_id)];
-        if (found) {
-          const cleanSeed = found.replace(/\s+/g, "");
+    // 2. Query Keeper Live Seed API (amstr-keeper.fly.dev)
+    let isCancelled = false;
+    const keeperUrl = (CONFIG as any).KEEPER_URL || "https://amstr-keeper.fly.dev";
+
+    fetch(`${keeperUrl}/seed/${round.round_id}`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (isCancelled) return;
+        if (data?.seed) {
+          const cleanSeed = data.seed.replace(/\s+/g, "");
           setSeedInput(cleanSeed);
           runVerification(cleanSeed, round);
           if (typeof window !== "undefined") {
@@ -109,25 +116,53 @@ export const FairnessModal: React.FC<FairnessModalProps> = ({ round, isOpen, onC
           return;
         }
 
-        // Fallback: Query NEAR RPC for on-chain round_settled event logs
-        if (KNOWN_SETTLE_TXS[round.round_id]) {
-          nearRpc
-            .getRoundSettledEvent(round.round_id, KNOWN_SETTLE_TXS[round.round_id])
-            .then((eventData) => {
-              if (eventData?.seed) {
-                const cleanSeed = eventData.seed.replace(/\s+/g, "");
-                setSeedInput(cleanSeed);
-                runVerification(cleanSeed, round);
+        // 3. Fallback: Query /settledSeeds.json (allows new keeper seeds without rebuild)
+        fetch("/settledSeeds.json?t=" + Date.now())
+          .then((res) => (res.ok ? res.json() : {}))
+          .then((seedsMap: Record<string, string>) => {
+            if (isCancelled) return;
+            const found = seedsMap[round.round_id] || seedsMap[String(round.round_id)];
+            if (found) {
+              const cleanSeed = found.replace(/\s+/g, "");
+              setSeedInput(cleanSeed);
+              runVerification(cleanSeed, round);
+              if (typeof window !== "undefined") {
+                localStorage.setItem(`amstr_seed_${round.round_id}`, cleanSeed);
               }
-            })
-            .catch((err) => {
-              console.warn("Failed to fetch settle event:", err);
-            });
-        }
+              return;
+            }
+
+            // 4. Fallback: Query NEAR RPC for on-chain round_settled event logs
+            if (KNOWN_SETTLE_TXS[round.round_id]) {
+              nearRpc
+                .getRoundSettledEvent(round.round_id, KNOWN_SETTLE_TXS[round.round_id])
+                .then((eventData) => {
+                  if (isCancelled) return;
+                  if (eventData?.seed) {
+                    const cleanSeed = eventData.seed.replace(/\s+/g, "");
+                    setSeedInput(cleanSeed);
+                    runVerification(cleanSeed, round);
+                    if (typeof window !== "undefined") {
+                      localStorage.setItem(`amstr_seed_${round.round_id}`, cleanSeed);
+                    }
+                  }
+                })
+                .catch((err) => {
+                  console.warn("Failed to fetch settle event:", err);
+                });
+            }
+          })
+          .catch((e) => {
+            console.warn("Could not fetch settledSeeds.json:", e);
+          });
       })
       .catch((e) => {
-        console.warn("Could not fetch settledSeeds.json:", e);
+        console.warn("Keeper seed query error:", e);
       });
+
+    return () => {
+      isCancelled = true;
+    };
   }, [round, isOpen]);
 
   const handleVerify = () => {

@@ -9,6 +9,7 @@ export const CONFIG = {
     : "https://2dba4d4f68ab082e126801c1271d5fbc1abff3bd-3000.dstack-pha-prod5.phala.network",
   CVM_DIRECT_URL: "https://2dba4d4f68ab082e126801c1271d5fbc1abff3bd-3000.dstack-pha-prod5.phala.network",
   CVM_ID: "10d1a977-f439-4128-8a73-f173594d6e45",
+  KEEPER_URL: "https://amstr-keeper.fly.dev",
   PHALA_DASHBOARD_URL: "https://cloud.phala.network",
   RPC_ENDPOINTS: [
     ...(typeof window !== "undefined" && window.location.hostname === "localhost" ? ["/api/near-rpc"] : []),
