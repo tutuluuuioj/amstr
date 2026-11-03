@@ -365,8 +365,8 @@ class NearRpcClient {
     }
 
     return {
-      ed25519_pubkey: data.ed25519_pub || data.pubkey || "",
-      x25519_pubkey: data.x25519_pub || data.x25519_pubkey || "",
+      ed25519_pubkey: data.ed25519_pubkey || data.ed25519_pub || data.pubkey || "",
+      x25519_pubkey: data.x25519_pubkey || data.x25519_pub || "",
       code_hash: rtmr3Hex,
       report_data: reportDataHex,
       is_hardware_tdx: data.is_hardware_tdx ?? true,

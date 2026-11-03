@@ -44,10 +44,12 @@ export const AttestationDrawer: React.FC<AttestationDrawerProps> = ({ isOpen, on
 
       const contractX25519Base64 = util.encodeBase64(new Uint8Array(contractCvm.x25519_pub));
       const x25519Matches =
+        Boolean(att.x25519_pubkey) &&
         contractX25519Base64.trim() === att.x25519_pubkey.trim();
       const ed25519Matches =
-        contractCvm.pubkey.trim() === att.ed25519_pubkey.trim() ||
-        contractCvm.pubkey.replace("ed25519:", "") === att.ed25519_pubkey.replace("ed25519:", "");
+        Boolean(att.ed25519_pubkey) &&
+        (contractCvm.pubkey.trim() === att.ed25519_pubkey.trim() ||
+        contractCvm.pubkey.replace("ed25519:", "") === att.ed25519_pubkey.replace("ed25519:", ""));
       const rtmr3Matches =
         att.code_hash.toLowerCase() === CONFIG.RTMR3_EXPECTED.toLowerCase() &&
         att.code_hash.toLowerCase() === contractCvm.code_hash.toLowerCase();
