@@ -444,6 +444,31 @@ export class AmstrMcpEngine {
       throw new Error(`Round #${roundId} is not in Open status (currently ${activeRound.status}). Bet deposit is closed.`);
     }
 
+    // Pre-flight check: ensure deposit window has enough remaining blocks before broadcasting tx
+    try {
+      const endpoint = DEFAULT_RPC_ENDPOINTS[this.rpcIndex % DEFAULT_RPC_ENDPOINTS.length];
+      const statusRes = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: "status-check", method: "status", params: [] }),
+        signal: AbortSignal.timeout(3000),
+      });
+      if (statusRes.ok) {
+        const statusData: any = await statusRes.json();
+        const currentHeight = statusData.result?.sync_info?.latest_block_height;
+        if (currentHeight) {
+          const remainingBlocks = activeRound.close_height - currentHeight;
+          if (remainingBlocks <= 4) {
+            throw new Error(
+              `Deposit window for Round #${roundId} is ${remainingBlocks <= 0 ? "already closed" : `closing in ~${remainingBlocks}s (${remainingBlocks} blocks)`}. Too late to place bet for this round. Please wait ~10-15 seconds for Round #${roundId + 1} to open.`
+            );
+          }
+        }
+      }
+    } catch (checkErr: any) {
+      if (checkErr.message?.includes("Deposit window for Round")) throw checkErr;
+    }
+
     // 2. Fetch registered CVM public key
     const cvmKey = await this.viewFunction<any>("get_cvm", {});
     if (!cvmKey?.x25519_pub || cvmKey.x25519_pub.length !== 32) {
@@ -484,11 +509,17 @@ export class AmstrMcpEngine {
         ciphertext: ciphertextBase64,
         commit: commitBase64,
       },
-      gas: 150000000000000n, // 150 TGas
+      gas: 50000000000000n, // 50 TGas (lowered from 150 TGas to prevent ~0.15 NEAR temporary RPC gas hold)
       attachedDeposit: totalDeposit as any,
     });
 
     const txHash = txResult.transaction.hash;
+
+    let availableBalanceNear: number | undefined;
+    try {
+      const state = await nearAccount.state();
+      availableBalanceNear = parseFloat(utils.format.formatNearAmount(state.amount, 4));
+    } catch {}
 
     return {
       success: true,
@@ -498,6 +529,7 @@ export class AmstrMcpEngine {
       stake_near: stakeVal,
       storage_deposit_near: 0.01,
       total_deposited_near: parseFloat(utils.format.formatNearAmount(totalDeposit.toString())),
+      available_balance_near: availableBalanceNear,
       tx_hash: txHash,
       explorer_url: `https://testnet.nearblocks.io/txns/${txHash}`,
       privacy_guarantee: "Tile picks sealed in Intel TDX Hardware Enclave (AES-GCM/X25519-Poly1305).",
@@ -553,7 +585,7 @@ export class AmstrMcpEngine {
       args: {
         round_ids: roundIdsToClaim,
       },
-      gas: 200000000000000n, // 200 TGas
+      gas: 75000000000000n, // 75 TGas
       attachedDeposit: 0n as any,
     });
 
@@ -576,7 +608,7 @@ export class AmstrMcpEngine {
       contractId: CONTRACT_ID,
       methodName: "reclaim_storage",
       args: {},
-      gas: 100000000000000n, // 100 TGas
+      gas: 50000000000000n, // 50 TGas
       attachedDeposit: 0n as any,
     });
 
