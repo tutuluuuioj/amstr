@@ -101,9 +101,96 @@ All smart contracts are live, verified, and operational on **NEAR Testnet**:
 | **AMSTR Token (NEP-141)** | `token.amstr-admin-zxlhcx.testnet` | [View on NearBlocks](https://testnet.nearblocks.io/address/token.amstr-admin-zxlhcx.testnet) |
 | **Treasury & Buyback** | `treasury.amstr-admin-zxlhcx.testnet` | [View on NearBlocks](https://testnet.nearblocks.io/address/treasury.amstr-admin-zxlhcx.testnet) |
 | **AMSTR Staking Pool** | `staking.amstr-admin-zxlhcx.testnet` | [View on NearBlocks](https://testnet.nearblocks.io/address/staking.amstr-admin-zxlhcx.testnet) |
-| **Phala Intel TDX CVM** | `10d1a977-f439-4128-8a73-f173594d6e45` | [Live Enclave Gateway](https://2dba4d4f68ab082e126801c1271d5fbc1abff3bd-3000.dstack-pha-prod5.phala.network/health) |
+| **Phala Intel TDX CVM** | `10d1a977-f439-4128-8a73-f173594d6e45` | [Live Enclave DCAP Report](https://amstr-keeper.fly.dev/attestation) |
 | **Live Web dApp (Fly.io)** | `amstr-web` | [https://amstr-web.fly.dev](https://amstr-web.fly.dev) |
-| **Autonomous Keeper (Fly.io)** | `amstr-keeper` | [https://amstr-keeper.fly.dev/health](https://amstr-keeper.fly.dev/health) |
+| **Autonomous Keeper & MCP Server (Fly.io)** | `amstr-keeper` | [https://amstr-keeper.fly.dev/health](https://amstr-keeper.fly.dev/health) |
+
+---
+
+## 🤖 AI Agents & MCP: Autonomous Gameplay on NEAR
+
+> **Any AI Agent (Claude, Grok, Cursor, ChatGPT, or Python/TS bots) can now play AMSTR completely autonomously!**
+
+AMSTR includes a native **Model Context Protocol (MCP) Server** running directly alongside the Intel TDX enclave. Your AI agent can read game state, strategize, place confidential hardware-encrypted bets, monitor draws, and claim winnings on NEAR Protocol.
+
+```mermaid
+flowchart LR
+    Agent["🤖 AI Agent<br/>(Claude / Grok / Bot)"] -->|"MCP JSON-RPC / SSE"| Server["⚡ AMSTR MCP Server<br/>(amstr-keeper.fly.dev)"]
+    Server -->|"X25519 Enclave Encryption"| NEAR["⛓️ NEAR Testnet<br/>(game.amstr-admin-zxlhcx)"]
+    NEAR -->|"Autonomous Payouts"| Agent
+```
+
+### Why Let AI Agents Play AMSTR?
+* 🕵️ **100% Confidential**: Even though an AI agent signs the bet, the agent's tile selections are encrypted in-memory before broadcasting. No mempool bot or competitor can front-run your agent.
+* 🛡️ **Budget Guardrails**: You can set a strict `maxBetNear` per token (e.g., maximum 0.5 NEAR per bet). The MCP server rejects any agent attempt to wager beyond your budget.
+* ⚡ **Zero Human Intervention**: Your agent can monitor trends, place bets on open rounds, wait for settlement, and automatically claim winnings without you lifting a finger.
+
+---
+
+### 🧰 Available Agent MCP Tools
+
+Your AI agent receives 8 standardized tools out of the box:
+
+| Tool Name | What It Does (In Plain English) |
+|---|---|
+| `amstr_get_active_round` | Checks the live round ID, time remaining, current pot size, jackpot amounts, and active entries. |
+| `amstr_bet` | Picks 1 to 25 tiles (0–24) and places an encrypted bet. Automatically unseals with Intel TDX and signs on NEAR. |
+| `amstr_get_player_info` | Checks your agent's available NEAR balance, active bets, and automatically discovers any **unclaimed winnings**. |
+| `amstr_claim_payout` | Claims winning payouts and jackpot shares from settled rounds directly into your wallet. |
+| `amstr_reclaim_storage` | Recovers the refundable `0.01 NEAR` entry storage deposit from non-winning settled rounds. |
+| `amstr_verify_fairness` | Mathematically proves that the round's winning tile matched the enclave's pre-committed seed hash and block entropy. |
+| `amstr_get_jackpot_status` | Checks reserves for the Shard (1:300), Vein (1:1,000), and Core (1:3,000) Jackpots. |
+| `amstr_get_recent_rounds` | Retrieves past winning numbers, pot sizes, and trends so the agent can analyze historical statistics. |
+
+---
+
+### ⚡ 60-Second "Noob-Friendly" Setup Guide
+
+You don't need to be a developer to give your AI agent an AMSTR account:
+
+#### Step 1: Generate an Agent Token in the Web App
+1. Go to [https://amstr-web.fly.dev](https://amstr-web.fly.dev) and click the **🤖 AI Agents** tab in the top navigation bar.
+2. Select **Dedicated Account** (Recommended: creates a self-contained testnet wallet for your agent).
+3. Fund it with a small amount of testnet NEAR (e.g. `0.2 NEAR`) using the 1-click button.
+4. Click **Generate Agent Token** and click **Copy Token** (`amstr_mcp_...`).
+
+#### Step 2: Connect Your AI Agent
+
+##### Option A: Connect to Claude Desktop or Cursor
+Add this to your `claude_desktop_config.json`:
+```json
+{
+  "mcpServers": {
+    "amstr": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "https://amstr-keeper.fly.dev/mcp/sse", "--header", "Authorization: Bearer amstr_mcp_YOUR_TOKEN_HERE"]
+    }
+  }
+}
+```
+
+##### Option B: Connect to Grok Bot or Remote MCP Connectors
+In Grok Bot or any SSE-compatible MCP interface, add a new connector:
+* **Server URL**: `https://amstr-keeper.fly.dev/mcp`
+* **Transport**: Server-Sent Events (SSE) or HTTP
+* **Bearer Token**: `amstr_mcp_YOUR_TOKEN_HERE`
+
+##### Option C: Direct Curl / HTTP Testing
+You can test any tool instantly from your terminal without any software:
+```bash
+# Check the live round
+curl -s -X POST https://amstr-keeper.fly.dev/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "amstr_get_active_round", "arguments": {}}}'
+```
+
+#### Step 3: Prompt Your Agent to Play!
+Simply say to your AI in chat:
+> *"Check the current AMSTR round. If it's open, place a 0.05 NEAR bet on tiles 7, 12, and 18. If we won the previous round, claim our payout!"*
+
+Your AI agent will query the MCP server, encrypt its picks, sign the NEAR transaction, and report the transaction explorer link back to you!
+
+---
 
 ---
 
