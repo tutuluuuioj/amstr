@@ -11,9 +11,11 @@ export interface GeneratedMcpToken {
   serverUrl: string;
   sseUrl: string;
   isRegisteredOnServer: boolean;
+  accountType: "dedicated" | "connected";
+  isFundedOnChain?: boolean;
 }
 
-const STORAGE_KEY = "amstr_agent_mcp_tokens_v1";
+const STORAGE_KEY = "amstr_agent_mcp_tokens_v2";
 
 export function loadSavedMcpTokens(): GeneratedMcpToken[] {
   try {
@@ -32,8 +34,79 @@ export function saveMcpTokens(tokens: GeneratedMcpToken[]): void {
   }
 }
 
+export function getImplicitAccountId(keyPair: KeyPair): string {
+  const rawData = (keyPair.getPublicKey() as any).data;
+  return Array.from(rawData)
+    .map((b: any) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+export async function checkKeyOnChain(
+  accountId: string,
+  publicKeyStr: string
+): Promise<{ exists: boolean; permission?: string; balanceNear?: string }> {
+  try {
+    const [keysRes, accountRes] = await Promise.all([
+      fetch("https://near-testnet.drpc.org", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: "check-key",
+          method: "query",
+          params: {
+            request_type: "view_access_key_list",
+            finality: "final",
+            account_id: accountId,
+          },
+        }),
+      }),
+      fetch("https://near-testnet.drpc.org", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: "check-account",
+          method: "query",
+          params: {
+            request_type: "view_account",
+            finality: "final",
+            account_id: accountId,
+          },
+        }),
+      }),
+    ]);
+
+    const keysData = await keysRes.json();
+    const accountData = await accountRes.json();
+
+    let balanceNear = "0";
+    if (accountData.result?.amount) {
+      const nearVal = BigInt(accountData.result.amount) / 10n ** 24n;
+      const frac = ((BigInt(accountData.result.amount) % 10n ** 24n) / 10n ** 20n).toString().padStart(4, "0");
+      balanceNear = `${nearVal}.${frac}`;
+    }
+
+    const keys = keysData.result?.keys || [];
+    const match = keys.find((k: any) => k.public_key === publicKeyStr);
+
+    if (match) {
+      const perm =
+        typeof match.access_key.permission === "string"
+          ? match.access_key.permission
+          : "FunctionCall";
+      return { exists: true, permission: perm, balanceNear };
+    }
+
+    return { exists: false, balanceNear };
+  } catch {
+    return { exists: false };
+  }
+}
+
 export async function generateAgentMcpToken(params: {
-  accountId: string;
+  accountType: "dedicated" | "connected";
+  connectedAccountId?: string;
   existingPrivateKey?: string;
   label?: string;
   maxBetNear?: number;
@@ -59,14 +132,22 @@ export async function generateAgentMcpToken(params: {
     privateKeyStr = keyPair.toString();
   }
 
+  // Determine target account ID:
+  // If dedicated: use the 64-char implicit account derived from the keypair
+  // If connected: use connectedAccountId
+  const targetAccountId =
+    params.accountType === "dedicated"
+      ? getImplicitAccountId(keyPair)
+      : params.connectedAccountId || "guest-agent.testnet";
+
   const payload = {
     v: 1,
     type: "amstr_agent_token",
-    accountId: params.accountId,
+    accountId: targetAccountId,
     privateKey: privateKeyStr,
     contractId: CONFIG.CONTRACT_ID,
     network: CONFIG.NETWORK_ID,
-    label: params.label || `Agent-${params.accountId.split(".")[0]}`,
+    label: params.label || `Agent-${targetAccountId.slice(0, 8)}`,
     createdAt: Date.now(),
     maxBetNear: params.maxBetNear,
     allowedMethods: ["deploy", "claim", "reclaim_storage", "refund_expired"],
@@ -81,7 +162,7 @@ export async function generateAgentMcpToken(params: {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        accountId: params.accountId,
+        accountId: targetAccountId,
         privateKey: privateKeyStr,
         label: payload.label,
         maxBetNear: params.maxBetNear,
@@ -96,7 +177,7 @@ export async function generateAgentMcpToken(params: {
 
   const result: GeneratedMcpToken = {
     token,
-    accountId: params.accountId,
+    accountId: targetAccountId,
     publicKey: publicKeyStr,
     privateKey: privateKeyStr,
     label: payload.label,
@@ -104,6 +185,7 @@ export async function generateAgentMcpToken(params: {
     serverUrl: `${keeperUrl}/mcp`,
     sseUrl: `${keeperUrl}/mcp/sse`,
     isRegisteredOnServer: isRegistered,
+    accountType: params.accountType,
   };
 
   const all = loadSavedMcpTokens();

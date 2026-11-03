@@ -14,13 +14,18 @@ import {
   Coins,
   ChevronRight,
   Info,
+  AlertTriangle,
+  RefreshCw,
+  Wallet,
 } from "lucide-react";
 import {
   generateAgentMcpToken,
   loadSavedMcpTokens,
   testMcpTool,
+  checkKeyOnChain,
   GeneratedMcpToken,
 } from "../services/agentToken";
+import { walletService } from "../services/wallet";
 import { CONFIG } from "../config";
 
 interface AgentPageProps {
@@ -36,13 +41,24 @@ export const AgentPage: React.FC<AgentPageProps> = ({
 }) => {
   const [tokens, setTokens] = useState<GeneratedMcpToken[]>([]);
   const [selectedToken, setSelectedToken] = useState<GeneratedMcpToken | null>(null);
+  const [accountMode, setAccountMode] = useState<"dedicated" | "connected">("dedicated");
+  const [fundingAmount, setFundingAmount] = useState<string>("0.1");
   const [labelInput, setLabelInput] = useState<string>("Autonomous Agent");
   const [maxBetInput, setMaxBetInput] = useState<string>("0.5");
   const [customKeyInput, setCustomKeyInput] = useState<string>("");
-  const [useDedicatedKey, setUseDedicatedKey] = useState<boolean>(true);
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
+  const [isFunding, setIsFunding] = useState<boolean>(false);
+  const [isAddingKey, setIsAddingKey] = useState<boolean>(false);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [activeSetupTab, setActiveSetupTab] = useState<"claude" | "remote" | "prompt" | "curl">("claude");
+
+  // On-chain status of selected token
+  const [onChainStatus, setOnChainStatus] = useState<{
+    checked: boolean;
+    exists: boolean;
+    permission?: string;
+    balanceNear?: string;
+  }>({ checked: false, exists: false });
 
   // Tool tester state
   const [selectedTestTool, setSelectedTestTool] = useState<string>("amstr_get_active_round");
@@ -59,14 +75,32 @@ export const AgentPage: React.FC<AgentPageProps> = ({
     }
   }, []);
 
+  // Check on-chain status whenever selected token changes
+  const verifyTokenOnChain = async (token: GeneratedMcpToken) => {
+    setOnChainStatus({ checked: false, exists: false });
+    const res = await checkKeyOnChain(token.accountId, token.publicKey);
+    setOnChainStatus({
+      checked: true,
+      exists: res.exists,
+      permission: res.permission,
+      balanceNear: res.balanceNear,
+    });
+  };
+
+  useEffect(() => {
+    if (selectedToken) {
+      verifyTokenOnChain(selectedToken);
+    }
+  }, [selectedToken]);
+
   const handleGenerate = async () => {
-    const targetAccount = accountId || "guest-agent.testnet";
     setIsGenerating(true);
     try {
       const maxBet = maxBetInput ? parseFloat(maxBetInput) : undefined;
       const newToken = await generateAgentMcpToken({
-        accountId: targetAccount,
-        existingPrivateKey: useDedicatedKey ? undefined : customKeyInput || undefined,
+        accountType: accountMode,
+        connectedAccountId: accountId || undefined,
+        existingPrivateKey: customKeyInput.trim() || undefined,
         label: labelInput || "Autonomous Agent",
         maxBetNear: maxBet,
       });
@@ -74,10 +108,50 @@ export const AgentPage: React.FC<AgentPageProps> = ({
       const updated = [newToken, ...tokens.filter((t) => t.token !== newToken.token)];
       setTokens(updated);
       setSelectedToken(newToken);
+      await verifyTokenOnChain(newToken);
     } catch (err: any) {
       alert("Token generation error: " + (err.message || String(err)));
     } finally {
       setIsGenerating(false);
+    }
+  };
+
+  const handleFundAgentAccount = async () => {
+    if (!selectedToken) return;
+    if (!accountId) {
+      onConnectWallet();
+      return;
+    }
+    setIsFunding(true);
+    try {
+      await walletService.fundAgentAccount(selectedToken.accountId, fundingAmount);
+      // Wait a moment for NEAR testnet block confirmation
+      setTimeout(async () => {
+        await verifyTokenOnChain(selectedToken);
+        setIsFunding(false);
+      }, 2500);
+    } catch (err: any) {
+      alert("Funding error: " + (err.message || String(err)));
+      setIsFunding(false);
+    }
+  };
+
+  const handleAddKeyToAccount = async () => {
+    if (!selectedToken) return;
+    if (!accountId) {
+      onConnectWallet();
+      return;
+    }
+    setIsAddingKey(true);
+    try {
+      await walletService.addAgentKeyToAccount(selectedToken.publicKey);
+      setTimeout(async () => {
+        await verifyTokenOnChain(selectedToken);
+        setIsAddingKey(false);
+      }, 2500);
+    } catch (err: any) {
+      alert("AddKey error: " + (err.message || String(err)));
+      setIsAddingKey(false);
     }
   };
 
@@ -123,8 +197,8 @@ export const AgentPage: React.FC<AgentPageProps> = ({
         break;
       case "amstr_get_player_info":
         setTestToolArgs(
-          accountId
-            ? `{\n  "account_id": "${accountId}"\n}`
+          selectedToken
+            ? `{\n  "account_id": "${selectedToken.accountId}"\n}`
             : '{\n  "account_id": "looseward2086.testnet"\n}'
         );
         break;
@@ -208,18 +282,51 @@ export const AgentPage: React.FC<AgentPageProps> = ({
             </h2>
           </div>
 
-          {/* Connected Wallet Status */}
+          {/* Account Mode Selection */}
+          <div className="space-y-2">
+            <label className="text-xs font-mono text-[#8C8478] block">Choose Agent Architecture:</label>
+            <div className="grid grid-cols-2 gap-2 text-xs font-mono">
+              <button
+                type="button"
+                onClick={() => setAccountMode("dedicated")}
+                className={`p-2.5 rounded border text-left transition-all ${
+                  accountMode === "dedicated"
+                    ? "bg-[#C8763A]/15 border-[#C8763A] text-[#EDE6DA]"
+                    : "bg-[#0E0D0B] border-[#2A2620] text-[#8C8478] hover:text-[#EDE6DA]"
+                }`}
+              >
+                <div className="font-bold">Dedicated Account</div>
+                <div className="text-[10px] text-[#8C8478] mt-0.5 leading-tight">
+                  Isolated bankroll, 100% safe
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setAccountMode("connected")}
+                className={`p-2.5 rounded border text-left transition-all ${
+                  accountMode === "connected"
+                    ? "bg-[#C8763A]/15 border-[#C8763A] text-[#EDE6DA]"
+                    : "bg-[#0E0D0B] border-[#2A2620] text-[#8C8478] hover:text-[#EDE6DA]"
+                }`}
+              >
+                <div className="font-bold">Connected Wallet</div>
+                <div className="text-[10px] text-[#8C8478] mt-0.5 leading-tight">
+                  Add key to your account
+                </div>
+              </button>
+            </div>
+          </div>
+
+          {/* Connected Wallet Info */}
           <div className="bg-[#0E0D0B] p-3 rounded border border-[#2A2620] text-xs">
             <div className="flex items-center justify-between">
-              <span className="text-[#8C8478]">Connected Wallet:</span>
+              <span className="text-[#8C8478]">Your Wallet:</span>
               {accountId ? (
                 <span className="text-[#EDE6DA] font-mono font-bold">{accountId}</span>
               ) : (
-                <button
-                  onClick={onConnectWallet}
-                  className="text-[#C8763A] hover:underline font-bold"
-                >
-                  Connect NEAR Wallet
+                <button onClick={onConnectWallet} className="text-[#C8763A] hover:underline font-bold">
+                  Connect Wallet
                 </button>
               )}
             </div>
@@ -245,7 +352,7 @@ export const AgentPage: React.FC<AgentPageProps> = ({
             </div>
 
             <div>
-              <label className="block text-[#8C8478] font-mono mb-1">Max Bet Limit (NEAR)</label>
+              <label className="block text-[#8C8478] font-mono mb-1">Max Bet Limit per Round (NEAR)</label>
               <input
                 type="number"
                 step="0.05"
@@ -255,26 +362,22 @@ export const AgentPage: React.FC<AgentPageProps> = ({
                 placeholder="e.g. 0.5"
                 className="w-full bg-[#0E0D0B] border border-[#2A2620] rounded px-3 py-2 text-[#EDE6DA] focus:border-[#C8763A] outline-none font-mono text-xs"
               />
-              <span className="text-[10px] text-[#8C8478] mt-1 block">
-                Agent bets exceeding this threshold will be automatically rejected.
-              </span>
             </div>
 
-            <div className="p-3 bg-[#0E0D0B] border border-[#2A2620] rounded space-y-2">
-              <label className="flex items-center space-x-2 text-xs text-[#EDE6DA] cursor-pointer">
+            {accountMode === "connected" && (
+              <div>
+                <label className="block text-[#8C8478] font-mono mb-1">
+                  Optional: Existing Private Key (or leave empty to generate new)
+                </label>
                 <input
-                  type="checkbox"
-                  checked={useDedicatedKey}
-                  onChange={(e) => setUseDedicatedKey(e.target.checked)}
-                  className="accent-[#C8763A]"
+                  type="password"
+                  value={customKeyInput}
+                  onChange={(e) => setCustomKeyInput(e.target.value)}
+                  placeholder="ed25519:..."
+                  className="w-full bg-[#0E0D0B] border border-[#2A2620] rounded px-3 py-2 text-[#EDE6DA] focus:border-[#C8763A] outline-none font-mono text-xs"
                 />
-                <span>Generate Dedicated Agent Keypair (Recommended)</span>
-              </label>
-              <p className="text-[10px] text-[#8C8478] pl-5 leading-normal">
-                Creates an isolated cryptographic sub-key for the agent. The agent can sign bets without
-                exposing your primary wallet keys.
-              </p>
-            </div>
+              </div>
+            )}
 
             <button
               onClick={handleGenerate}
@@ -282,7 +385,7 @@ export const AgentPage: React.FC<AgentPageProps> = ({
               className="w-full py-2.5 px-4 bg-[#C8763A] hover:bg-[#d88244] text-[#0E0D0B] font-bold rounded-sm text-xs transition-colors flex items-center justify-center space-x-2 font-mono shadow-md disabled:opacity-50"
             >
               <Cpu className="w-4 h-4" />
-              <span>{isGenerating ? "Generating..." : "⚡ Generate Agent MCP Token"}</span>
+              <span>{isGenerating ? "Generating..." : "⚡ Generate Agent Token"}</span>
             </button>
           </div>
 
@@ -305,7 +408,7 @@ export const AgentPage: React.FC<AgentPageProps> = ({
                   >
                     <span className="font-mono truncate">{t.label}</span>
                     <span className="text-[10px] font-mono text-[#8C8478]">
-                      {new Date(t.createdAt).toLocaleDateString()}
+                      {t.accountType === "dedicated" ? "Dedicated" : "Connected"}
                     </span>
                   </button>
                 ))}
@@ -320,7 +423,7 @@ export const AgentPage: React.FC<AgentPageProps> = ({
             <div className="flex items-center space-x-2">
               <Bot className="w-4 h-4 text-[#5FA88A]" />
               <h2 className="text-sm font-bold text-[#EDE6DA] uppercase tracking-wider font-mono">
-                2. Agent Credentials & Config
+                2. Agent Credentials & On-Chain Activation
               </h2>
             </div>
             {selectedToken && (
@@ -330,11 +433,116 @@ export const AgentPage: React.FC<AgentPageProps> = ({
             )}
           </div>
 
+          {/* ON-CHAIN ACTIVATION STATUS BANNER */}
+          {selectedToken && (
+            <div className="border border-[#2A2620] rounded p-3 bg-[#0E0D0B] text-xs font-mono space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-[#8C8478]">On-Chain Target Account:</span>
+                <span className="text-[#EDE6DA] font-bold truncate max-w-[280px]">
+                  {selectedToken.accountId}
+                </span>
+              </div>
+
+              <div className="flex items-center justify-between">
+                <span className="text-[#8C8478]">Public Key:</span>
+                <span className="text-[#8C8478] truncate max-w-[280px] text-[11px]">
+                  {selectedToken.publicKey}
+                </span>
+              </div>
+
+              {/* Status State */}
+              <div className="pt-2 border-t border-[#2A2620] flex items-center justify-between">
+                <div className="flex items-center space-x-2">
+                  <span className="text-[#8C8478]">Blockchain Status:</span>
+                  {!onChainStatus.checked ? (
+                    <span className="text-[#8C8478] flex items-center space-x-1">
+                      <RefreshCw className="w-3 h-3 animate-spin" />
+                      <span>Checking on-chain...</span>
+                    </span>
+                  ) : onChainStatus.exists ? (
+                    <span className="text-[#5FA88A] flex items-center space-x-1 font-bold">
+                      <Check className="w-3.5 h-3.5" />
+                      <span>
+                        Active & Registered ({onChainStatus.balanceNear || "0"} NEAR)
+                      </span>
+                    </span>
+                  ) : (
+                    <span className="text-[#C2483D] flex items-center space-x-1 font-bold">
+                      <AlertTriangle className="w-3.5 h-3.5" />
+                      <span>Not Registered On-Chain Yet</span>
+                    </span>
+                  )}
+                </div>
+
+                <button
+                  onClick={() => verifyTokenOnChain(selectedToken)}
+                  className="text-[#8C8478] hover:text-[#EDE6DA] text-[11px] underline"
+                >
+                  Re-check
+                </button>
+              </div>
+
+              {/* 1-CLICK ACTIVATION ACTIONS IF NOT ON-CHAIN */}
+              {onChainStatus.checked && !onChainStatus.exists && (
+                <div className="mt-2 p-3 bg-[#C8763A]/10 border border-[#C8763A]/40 rounded space-y-2 text-xs">
+                  <div className="text-[#EDE6DA] font-bold flex items-center space-x-1.5">
+                    <Info className="w-3.5 h-3.5 text-[#C8763A]" />
+                    <span>Action Required to Allow Agent Betting</span>
+                  </div>
+
+                  {selectedToken.accountType === "dedicated" ? (
+                    <div>
+                      <p className="text-[11px] text-[#8C8478] leading-normal mb-2">
+                        This dedicated agent account needs initial funding to be activated on NEAR testnet.
+                        Click below to transfer testnet NEAR from your wallet to the agent.
+                      </p>
+                      <div className="flex items-center space-x-2">
+                        <select
+                          value={fundingAmount}
+                          onChange={(e) => setFundingAmount(e.target.value)}
+                          className="bg-[#0E0D0B] border border-[#2A2620] rounded px-2 py-1.5 text-xs text-[#EDE6DA]"
+                        >
+                          <option value="0.05">0.05 NEAR</option>
+                          <option value="0.1">0.1 NEAR (Recommended)</option>
+                          <option value="0.2">0.2 NEAR</option>
+                          <option value="0.5">0.5 NEAR</option>
+                        </select>
+                        <button
+                          onClick={handleFundAgentAccount}
+                          disabled={isFunding}
+                          className="py-1.5 px-3 bg-[#C8763A] hover:bg-[#d88244] text-[#0E0D0B] font-bold rounded text-xs transition-colors flex items-center space-x-1 disabled:opacity-50"
+                        >
+                          <Coins className="w-3.5 h-3.5" />
+                          <span>{isFunding ? "Funding..." : `Fund Agent with ${fundingAmount} NEAR`}</span>
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div>
+                      <p className="text-[11px] text-[#8C8478] leading-normal mb-2">
+                        Your connected wallet must approve an <code>AddKey</code> transaction so this
+                        token's key can sign bets for <strong>{selectedToken.accountId}</strong>.
+                      </p>
+                      <button
+                        onClick={handleAddKeyToAccount}
+                        disabled={isAddingKey}
+                        className="py-1.5 px-3 bg-[#C8763A] hover:bg-[#d88244] text-[#0E0D0B] font-bold rounded text-xs transition-colors flex items-center space-x-1 disabled:opacity-50"
+                      >
+                        <Key className="w-3.5 h-3.5" />
+                        <span>{isAddingKey ? "Signing..." : "Add Key to Connected Wallet (1-Click)"}</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Active Token Display */}
           <div className="space-y-3">
             <div>
               <div className="flex items-center justify-between text-xs font-mono text-[#8C8478] mb-1">
-                <span>MCP Bearer Token</span>
+                <span>MCP Bearer Token (Give this to your AI agent)</span>
                 <button
                   onClick={() => copyToClipboard(activeTokenStr, "token")}
                   className="text-[#C8763A] hover:underline flex items-center space-x-1"

@@ -496,6 +496,58 @@ class WalletService {
       ],
     });
   }
+
+  /**
+   * MCP Agent Helper: Fund an implicit or sub-account for autonomous agent betting
+   */
+  public async fundAgentAccount(targetAccountId: string, amountNear: string | number): Promise<any> {
+    const yocto = parseNearToYocto(amountNear);
+    if (this.devAccountId) {
+      const account = await this.getNearAccount(this.devAccountId);
+      return await account.sendMoney(targetAccountId, BigInt(yocto));
+    }
+    if (!this.selector) throw new Error("Wallet not connected");
+    const wallet = await this.selector.wallet();
+    return await this.executeTransaction(wallet, {
+      receiverId: targetAccountId,
+      actions: [
+        {
+          type: "Transfer",
+          params: {
+            deposit: yocto,
+          },
+        },
+      ],
+    });
+  }
+
+  /**
+   * MCP Agent Helper: Add Full Access Key directly to connected wallet account
+   */
+  public async addAgentKeyToAccount(publicKeyStr: string): Promise<any> {
+    const accountId = this.getState().accountId;
+    if (!accountId) throw new Error("Wallet not connected");
+    if (this.devAccountId) {
+      const account = await this.getNearAccount(this.devAccountId);
+      return await account.addKey(publicKeyStr);
+    }
+    if (!this.selector) throw new Error("Wallet not connected");
+    const wallet = await this.selector.wallet();
+    return await this.executeTransaction(wallet, {
+      receiverId: accountId,
+      actions: [
+        {
+          type: "AddKey",
+          params: {
+            publicKey: publicKeyStr,
+            accessKey: {
+              permission: "FullAccess",
+            },
+          },
+        },
+      ],
+    });
+  }
 }
 
 export const walletService = new WalletService();

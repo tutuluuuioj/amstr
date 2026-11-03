@@ -165,6 +165,7 @@ export class AmstrMcpEngine {
 
     const keyStore = new keyStores.InMemoryKeyStore();
     const keyPair = KeyPair.fromString(token.privateKey as any);
+    const pubKey = keyPair.getPublicKey().toString();
     await keyStore.setKey(token.network, token.accountId, keyPair);
 
     const endpoint = DEFAULT_RPC_ENDPOINTS[this.rpcIndex % DEFAULT_RPC_ENDPOINTS.length];
@@ -173,6 +174,35 @@ export class AmstrMcpEngine {
       keyStore,
       nodeUrl: endpoint,
     });
+
+    // Verify key exists on-chain before signing
+    try {
+      const accessKeysRes = (await near.connection.provider.query({
+        request_type: "view_access_key_list",
+        finality: "final",
+        account_id: token.accountId,
+      })) as any;
+      const keys = accessKeysRes?.keys || [];
+      const hasKey = keys.some((k: any) => k.public_key === pubKey);
+      if (!hasKey) {
+        throw new Error(
+          `On-chain Key Mismatch: Public key ${pubKey} is NOT registered on account ${token.accountId}. ` +
+            `The human user must either: (1) Fund the dedicated agent account (64-char hex address) with testnet NEAR, or ` +
+            `(2) Open the AMSTR web UI at https://amstr-web.fly.dev -> AI Agents and click 'Add Key to Account'.`
+        );
+      }
+    } catch (queryErr: any) {
+      if (queryErr.message?.includes("On-chain Key Mismatch")) {
+        throw queryErr;
+      }
+      if (queryErr.message?.includes("does not exist") || queryErr.message?.includes("UNKNOWN_ACCOUNT")) {
+        throw new Error(
+          `Account ${token.accountId} does not exist on NEAR ${token.network} yet. ` +
+            `Please fund this account with at least 0.05 NEAR to activate it on-chain.`
+        );
+      }
+      console.warn("[MCP] Access key pre-check warning:", queryErr.message);
+    }
 
     return await near.account(token.accountId);
   }
