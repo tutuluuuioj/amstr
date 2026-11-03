@@ -4,6 +4,7 @@ import path from "path";
 import fs from "fs";
 import http from "http";
 import { fileURLToPath } from "url";
+import { handleMcpHttp } from "./mcp/server.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.resolve(__dirname, "../../.env.testnet") });
@@ -615,7 +616,15 @@ async function main() {
   await runner.init();
 
   const httpPort = parseInt(process.env.PORT || "8080", 10);
-  const server = http.createServer((req, res) => {
+  const server = http.createServer(async (req, res) => {
+    // Check if request is an MCP endpoint
+    try {
+      const handled = await handleMcpHttp(req, res);
+      if (handled) return;
+    } catch (mcpErr: any) {
+      console.warn("[MCP Request Error]:", mcpErr.message);
+    }
+
     // CORS headers for web clients and cross-origin checks
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
@@ -638,6 +647,7 @@ async function main() {
         contractId: CONTRACT_ID,
         adminId: ADMIN_ID,
         settledSeedsCount: runner.getSettledSeedsCount(),
+        mcpStatus: "active",
         timestamp: Date.now()
       }));
       return;

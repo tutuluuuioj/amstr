@@ -2,7 +2,7 @@ import React from "react";
 import { LogOut } from "lucide-react";
 import { formatYoctoNear, formatYoctoAmstr } from "../services/near";
 
-export type NavTab = "play" | "rounds" | "proof" | "stake" | "how-it-works";
+export type NavTab = "play" | "rounds" | "proof" | "stake" | "agent" | "how-it-works";
 
 interface TopBarProps {
   activeTab: NavTab;
@@ -32,6 +32,7 @@ export const TopBar: React.FC<TopBarProps> = ({
     { id: "rounds", label: "Rounds" },
     { id: "proof", label: "Proof" },
     { id: "stake", label: "Stake" },
+    { id: "agent", label: "🤖 AI Agents" },
     { id: "how-it-works", label: "How it works" },
   ];
 

@@ -7,6 +7,7 @@ import { DeploysFeedAndWinnersProps as DeploysFeedAndWinners } from "./component
 import { RoundsPage } from "./pages/RoundsPage";
 import { ProofPage } from "./pages/ProofPage";
 import { StakePage } from "./pages/StakePage";
+import { AgentPage } from "./pages/AgentPage";
 import { HowItWorksPage } from "./pages/HowItWorksPage";
 import { AttestationDrawer } from "./components/AttestationDrawer";
 import { FairnessModal } from "./components/FairnessModal";
@@ -801,7 +802,16 @@ export const App: React.FC = () => {
           />
         )}
 
-        {/* Tab 5: HOW IT WORKS */}
+        {/* Tab 5: AI AGENT GATEWAY (MCP) */}
+        {activeTab === "agent" && (
+          <AgentPage
+            accountId={accountId}
+            nearBalance={nearBalance}
+            onConnectWallet={() => setIsWalletModalOpen(true)}
+          />
+        )}
+
+        {/* Tab 6: HOW IT WORKS */}
         {activeTab === "how-it-works" && <HowItWorksPage />}
       </main>
 

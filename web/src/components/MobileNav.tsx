@@ -1,5 +1,5 @@
 import React from "react";
-import { Grid, History, ShieldCheck, Coins, HelpCircle } from "lucide-react";
+import { Grid, History, ShieldCheck, Coins, Bot } from "lucide-react";
 import { NavTab } from "./TopBar";
 
 interface MobileNavProps {
@@ -11,6 +11,7 @@ export const MobileNav: React.FC<MobileNavProps> = ({ activeTab, onTabChange }) 
   const TABS: { id: NavTab; label: string; icon: React.ReactNode }[] = [
     { id: "play", label: "Play", icon: <Grid className="w-5 h-5" /> },
     { id: "rounds", label: "Rounds", icon: <History className="w-5 h-5" /> },
+    { id: "agent", label: "Agents", icon: <Bot className="w-5 h-5" /> },
     { id: "proof", label: "Proof", icon: <ShieldCheck className="w-5 h-5" /> },
     { id: "stake", label: "Stake", icon: <Coins className="w-5 h-5" /> },
   ];
