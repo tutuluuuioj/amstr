@@ -43,7 +43,7 @@ export const MCP_TOOLS: McpToolDefinition[] = [
   {
     name: "amstr_get_player_info",
     description:
-      "Get player account status, available NEAR balance, active bets in the current round, and unclaimed winnings.",
+      "Get player account status, available NEAR balance, active bets in the current round, registered key status, and discover any unclaimed winnings from settled rounds.",
     inputSchema: {
       type: "object",
       properties: {
@@ -84,7 +84,8 @@ export const MCP_TOOLS: McpToolDefinition[] = [
   },
   {
     name: "amstr_claim_payout",
-    description: "Claim winning payouts and jackpot shares for settled rounds won by the player.",
+    description:
+      "Claim winning payouts and jackpot shares for settled rounds won by the player. Automatically discovers unclaimed wins if round_ids is omitted. Note: Winning pot payouts are distributed net of a 5% staking dividend / treasury retention, plus standard NEAR execution gas (~0.0003 NEAR).",
     inputSchema: {
       type: "object",
       properties: {
@@ -271,8 +272,12 @@ export async function handleMcpHttp(req: http.IncomingMessage, res: http.ServerR
           json.accountId,
           json.privateKey,
           json.label,
-          json.maxBetNear
+          json.maxBetNear,
+          Boolean(json.serverVaulted)
         );
+
+        const host = req.headers.host || "amstr-keeper.fly.dev";
+        const proto = (req.headers["x-forwarded-proto"] as string) || "https";
 
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(
@@ -280,10 +285,34 @@ export async function handleMcpHttp(req: http.IncomingMessage, res: http.ServerR
             status: "ok",
             token: created.token,
             payload: created.payload,
-            serverUrl: `https://${req.headers.host || "amstr-keeper.fly.dev"}/mcp`,
-            sseUrl: `https://${req.headers.host || "amstr-keeper.fly.dev"}/mcp/sse`,
+            serverUrl: `${proto}://${host}/mcp`,
+            sseUrl: `${proto}://${host}/mcp/sse`,
           })
         );
+      } catch (err: any) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: err.message || String(err) }));
+      }
+    });
+    return true;
+  }
+
+  // Revoke token endpoint
+  if (req.method === "POST" && (pathname === "/mcp/token/revoke" || pathname === "/mcp/revoke")) {
+    let body = "";
+    req.on("data", (chunk) => (body += chunk));
+    req.on("end", () => {
+      try {
+        const json = JSON.parse(body || "{}");
+        const tokenToRevoke = json.token || parsedUrl.searchParams.get("token") || (req.headers.authorization as string) || "";
+        if (!tokenToRevoke) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Missing required field: token" }));
+          return;
+        }
+        const revoked = mcpEngine.revokeToken(tokenToRevoke);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ status: "ok", revoked }));
       } catch (err: any) {
         res.writeHead(500, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: err.message || String(err) }));
@@ -295,8 +324,14 @@ export async function handleMcpHttp(req: http.IncomingMessage, res: http.ServerR
   // Extract auth token from header or URL parameter
   const tokenParam = parsedUrl.searchParams.get("token") || (req.headers.authorization as string) || "";
 
-  // 3. GET /mcp/sse -> Server-Sent Events stream for official MCP clients
-  if (req.method === "GET" && pathname === "/mcp/sse") {
+  const isSseRequest =
+    pathname === "/mcp/sse" ||
+    pathname === "/sse" ||
+    ((pathname === "/mcp" || pathname === "/mcp/") &&
+      (req.headers.accept?.includes("text/event-stream") || parsedUrl.searchParams.get("transport") === "sse"));
+
+  // 3. GET -> Server-Sent Events stream for official MCP clients & Grok Bot connector
+  if (req.method === "GET" && isSseRequest) {
     const sessionId = Math.random().toString(36).substring(2, 15);
     res.writeHead(200, {
       "Content-Type": "text/event-stream",
@@ -307,13 +342,45 @@ export async function handleMcpHttp(req: http.IncomingMessage, res: http.ServerR
 
     sseSessions.set(sessionId, res);
 
-    // Send endpoint notification with post URL
-    res.write(`event: endpoint\ndata: /mcp/message?sessionId=${sessionId}\n\n`);
+    // Send endpoint notification with absolute post URL (required by Grok Bot and strict MCP clients)
+    const host = req.headers.host || "amstr-keeper.fly.dev";
+    const proto = (req.headers["x-forwarded-proto"] as string) || "https";
+    const postUrl = `${proto}://${host}/mcp/message?sessionId=${sessionId}`;
+    res.write(`event: endpoint\ndata: ${postUrl}\n\n`);
 
     req.on("close", () => {
       sseSessions.delete(sessionId);
     });
 
+    return true;
+  }
+
+  // 3b. GET /mcp -> Discovery probe for MCP connectors (e.g. Grok Bot checking if server is alive)
+  if (req.method === "GET" && (pathname === "/mcp" || pathname === "/mcp/")) {
+    const host = req.headers.host || "amstr-keeper.fly.dev";
+    const proto = (req.headers["x-forwarded-proto"] as string) || "https";
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(
+      JSON.stringify(
+        {
+          status: "active",
+          name: "amstr-mcp-server",
+          version: "1.0.0",
+          protocolVersion: "2024-11-05",
+          transport: ["sse", "http-jsonrpc"],
+          endpoints: {
+            sse: `${proto}://${host}/mcp/sse`,
+            jsonrpc: `${proto}://${host}/mcp`,
+            tools: `${proto}://${host}/mcp/tools`,
+          },
+          toolsCount: MCP_TOOLS.length,
+          instructions:
+            "Connect using SSE at /mcp/sse (or /mcp with Accept: text/event-stream), or POST JSON-RPC 2.0 to /mcp.",
+        },
+        null,
+        2
+      )
+    );
     return true;
   }
 

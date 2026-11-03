@@ -131,7 +131,8 @@ export class AmstrMcpEngine {
     accountId: string,
     privateKey?: string,
     label?: string,
-    maxBetNear?: number
+    maxBetNear?: number,
+    serverVaulted: boolean = false
   ): { token: string; payload: McpTokenPayload } {
     const payload: McpTokenPayload = {
       v: 1,
@@ -146,8 +147,15 @@ export class AmstrMcpEngine {
       allowedMethods: ["deploy", "claim", "reclaim_storage", "refund_expired"],
     };
 
-    const b64 = Buffer.from(JSON.stringify(payload)).toString("base64url");
-    const token = `amstr_mcp_${b64}`;
+    let token: string;
+    if (serverVaulted) {
+      // Server-vaulted revocable API token (hides private key from token string)
+      const secId = nacl.randomBytes(24);
+      token = `amstr_mcp_sec_${Buffer.from(secId).toString("hex")}`;
+    } else {
+      const b64 = Buffer.from(JSON.stringify(payload)).toString("base64url");
+      token = `amstr_mcp_${b64}`;
+    }
 
     this.tokens.set(token, {
       tokenId: token,
@@ -161,6 +169,13 @@ export class AmstrMcpEngine {
     this.saveTokens();
 
     return { token, payload };
+  }
+
+  public revokeToken(tokenString: string): boolean {
+    const clean = tokenString.trim().replace(/^Bearer\s+/i, "");
+    const deleted = this.tokens.delete(clean);
+    if (deleted) this.saveTokens();
+    return deleted;
   }
 
   private async viewFunction<T>(methodName: string, args: Record<string, any> = {}): Promise<T> {
@@ -389,10 +404,54 @@ export class AmstrMcpEngine {
       }
     } catch {}
 
+    // Scan recent settled rounds for unclaimed winnings (last 25 rounds)
+    const unclaimedWinnings: any[] = [];
+    let totalUnclaimedNear = 0;
+    try {
+      const nextRoundId = await this.viewFunction<number>("get_next_round_id", {});
+      const startRound = Math.max(1, nextRoundId - 1);
+      const minRound = Math.max(1, startRound - 25);
+
+      for (let rId = startRound; rId >= minRound; rId--) {
+        try {
+          const entry = await this.viewFunction<any>("get_entry", {
+            round_id: rId,
+            account_id: accountId,
+          });
+          if (entry && !entry.claimed) {
+            const round = await this.viewFunction<any>("get_round", { round_id: rId });
+            if (round && round.status === "Settled" && round.winning_tile !== null) {
+              const winningMask = 1 << round.winning_tile;
+              if (entry.mask !== null && (entry.mask & winningMask) !== 0) {
+                const netStake = parseFloat(utils.format.formatNearAmount(entry.net_stake || "0"));
+                const totalWinningTile = parseFloat(
+                  utils.format.formatNearAmount(round.per_tile_totals?.[round.winning_tile] || "1")
+                );
+                const totalPot = parseFloat(utils.format.formatNearAmount(round.total_net || "0"));
+                // Pot split net of 5% staking dividend
+                const estimatedPayout =
+                  totalWinningTile > 0 ? (totalPot * 0.95 * (netStake / 25)) / totalWinningTile : 0;
+
+                unclaimedWinnings.push({
+                  round_id: rId,
+                  winning_tile: round.winning_tile,
+                  net_stake_near: netStake,
+                  estimated_payout_near: parseFloat(estimatedPayout.toFixed(4)),
+                });
+                totalUnclaimedNear += estimatedPayout;
+              }
+            }
+          }
+        } catch {}
+      }
+    } catch {}
+
     return {
       account_id: accountId,
       available_balance_near: parseFloat(balanceNear),
       current_round_entries: currentRoundBets,
+      unclaimed_winnings: unclaimedWinnings,
+      total_unclaimed_near: parseFloat(totalUnclaimedNear.toFixed(4)),
       network: token.network,
       contract_id: token.contractId,
       label: token.label,
@@ -501,19 +560,33 @@ export class AmstrMcpEngine {
 
     // 7. Sign and send transaction on NEAR
     const nearAccount = await this.getNearAccount(token);
-    const txResult = await nearAccount.functionCall({
-      contractId: CONTRACT_ID,
-      methodName: "deploy",
-      args: {
-        round_id: roundId,
-        ciphertext: ciphertextBase64,
-        commit: commitBase64,
-      },
-      gas: 50000000000000n, // 50 TGas (lowered from 150 TGas to prevent ~0.15 NEAR temporary RPC gas hold)
-      attachedDeposit: totalDeposit as any,
-    });
-
-    const txHash = txResult.transaction.hash;
+    let txHash: string;
+    try {
+      const txResult = await nearAccount.functionCall({
+        contractId: CONTRACT_ID,
+        methodName: "deploy",
+        args: {
+          round_id: roundId,
+          ciphertext: ciphertextBase64,
+          commit: commitBase64,
+        },
+        gas: 50000000000000n, // 50 TGas (lowered from 150 TGas to prevent ~0.15 NEAR temporary RPC gas hold)
+        attachedDeposit: totalDeposit as any,
+      });
+      txHash = txResult.transaction.hash;
+    } catch (txErr: any) {
+      const errStr = txErr.message || String(txErr);
+      if (
+        errStr.includes("Deposit window closed") ||
+        errStr.includes("unreachable") ||
+        errStr.includes("WebAssembly trap")
+      ) {
+        throw new Error(
+          `Round #${roundId} closed right before block inclusion. Your bet was not placed and no NEAR was staked. Please wait ~10-15s and place your bet on the next active round.`
+        );
+      }
+      throw txErr;
+    }
 
     let availableBalanceNear: number | undefined;
     try {
@@ -530,6 +603,8 @@ export class AmstrMcpEngine {
       storage_deposit_near: 0.01,
       total_deposited_near: parseFloat(utils.format.formatNearAmount(totalDeposit.toString())),
       available_balance_near: availableBalanceNear,
+      attached_gas_tgas: 50,
+      protocol_gas_hold_note: "NEAR Protocol temporarily reserves up to ~0.005 NEAR in-flight for attached gas, refunding unburnt gas immediately upon finality.",
       tx_hash: txHash,
       explorer_url: `https://testnet.nearblocks.io/txns/${txHash}`,
       privacy_guarantee: "Tile picks sealed in Intel TDX Hardware Enclave (AES-GCM/X25519-Poly1305).",
@@ -579,23 +654,50 @@ export class AmstrMcpEngine {
     }
 
     const nearAccount = await this.getNearAccount(token);
-    const txResult = await nearAccount.functionCall({
-      contractId: CONTRACT_ID,
-      methodName: "claim",
-      args: {
-        round_ids: roundIdsToClaim,
-      },
-      gas: 75000000000000n, // 75 TGas
-      attachedDeposit: 0n as any,
-    });
-
-    const txHash = txResult.transaction.hash;
+    let txHash: string = "";
+    try {
+      const txResult = await nearAccount.functionCall({
+        contractId: CONTRACT_ID,
+        methodName: "claim",
+        args: {
+          round_ids: roundIdsToClaim,
+        },
+        gas: 75000000000000n, // 75 TGas
+        attachedDeposit: 0n as any,
+      });
+      txHash = txResult.transaction.hash;
+    } catch (claimErr: any) {
+      // If RPC returned transient error (code 19, Timeout, etc.), verify on-chain if entries are now claimed
+      try {
+        let allConfirmedClaimed = true;
+        for (const rId of roundIdsToClaim) {
+          const entry = await this.viewFunction<any>("get_entry", {
+            round_id: rId,
+            account_id: token.accountId,
+          });
+          if (entry && !entry.claimed) {
+            allConfirmedClaimed = false;
+            break;
+          }
+        }
+        if (allConfirmedClaimed) {
+          return {
+            claimed: true,
+            round_ids: roundIdsToClaim,
+            message: "Payout claimed and confirmed on-chain.",
+            payout_policy: "Winning payouts are distributed net of 5% staking dividend / treasury retention, plus standard NEAR execution gas (~0.0003 NEAR).",
+          };
+        }
+      } catch {}
+      throw claimErr;
+    }
 
     return {
       claimed: true,
       round_ids: roundIdsToClaim,
       tx_hash: txHash,
       explorer_url: `https://testnet.nearblocks.io/txns/${txHash}`,
+      payout_policy: "Winning payouts are distributed net of 5% staking dividend / treasury retention, plus standard NEAR execution gas (~0.0003 NEAR).",
     };
   }
 

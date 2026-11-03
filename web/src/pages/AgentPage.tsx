@@ -540,6 +540,20 @@ export const AgentPage: React.FC<AgentPageProps> = ({
 
           {/* Active Token Display */}
           <div className="space-y-3">
+            {selectedToken && selectedToken.accountType === "connected" && !onChainStatus.exists && onChainStatus.checked && (
+              <div className="p-2.5 bg-[#C2483D]/10 border border-[#C2483D]/40 rounded text-[11px] text-[#C2483D] flex items-center space-x-2">
+                <span>⚠️</span>
+                <span>
+                  Key not yet authorized on-chain! Click <strong>"Add Key to Connected Wallet"</strong> above to register it on NEAR before giving it to your agent.
+                </span>
+              </div>
+            )}
+            {selectedToken && onChainStatus.exists && onChainStatus.checked && (
+              <div className="p-2 bg-[#5FA88A]/10 border border-[#5FA88A]/40 rounded text-[11px] text-[#5FA88A] flex items-center space-x-2 font-mono">
+                <span>✓</span>
+                <span>Key verified on-chain ({onChainStatus.permission || "Full Access"}). Ready for agent use!</span>
+              </div>
+            )}
             <div>
               <div className="flex items-center justify-between text-xs font-mono text-[#8C8478] mb-1">
                 <span>MCP Bearer Token (Give this to your AI agent)</span>
