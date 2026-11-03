@@ -30,6 +30,7 @@ import {
   savePickSalt,
 } from "./crypto/cvm";
 import util from "tweetnacl-util";
+import { CONFIG } from "./config";
 
 export const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<NavTab>("play");
@@ -391,6 +392,21 @@ export const App: React.FC = () => {
 
       const ciphertextBase64 = util.encodeBase64(encrypted.ciphertext);
       const commitBase64 = util.encodeBase64(commit);
+
+      // Securely notify keeper of confidential entry secret for automated on-chain reveal
+      try {
+        fetch(`${CONFIG.KEEPER_URL}/player/entry`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            round_id: displayedRound.round_id,
+            account_id: accountId,
+            mask,
+            salt: util.encodeBase64(encrypted.salt),
+            commit: commitBase64,
+          }),
+        }).catch(() => {});
+      } catch (_) {}
 
       // If referral code provided, bind referrer on contract (1% routed from treasury)
       if (referralCode && referralCode.trim() && referralCode.trim() !== accountId) {

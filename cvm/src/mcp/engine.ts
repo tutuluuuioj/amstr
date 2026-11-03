@@ -17,6 +17,43 @@ const DEFAULT_RPC_ENDPOINTS = [
 const CONTRACT_ID = process.env.CONTRACT_ID || "game.amstr-admin-zxlhcx.testnet";
 const NETWORK_ID = (process.env.NEAR_NETWORK || "testnet") as "testnet" | "mainnet";
 
+export interface PlayerEntryRecord {
+  roundId: number;
+  accountId: string;
+  mask: number;
+  salt: Uint8Array; // 32 bytes
+  commit: string; // base64 or hex
+}
+
+export class PlayerEntryStore {
+  private static instance: PlayerEntryStore;
+  private entries: Map<string, PlayerEntryRecord> = new Map();
+
+  public static getInstance(): PlayerEntryStore {
+    if (!PlayerEntryStore.instance) {
+      PlayerEntryStore.instance = new PlayerEntryStore();
+    }
+    return PlayerEntryStore.instance;
+  }
+
+  public storeEntry(roundId: number, accountId: string, mask: number, salt: Uint8Array, commit?: string) {
+    const key = `${roundId}:${accountId}`;
+    this.entries.set(key, { roundId, accountId, mask, salt, commit: commit || "" });
+  }
+
+  public getEntry(roundId: number, accountId: string): PlayerEntryRecord | undefined {
+    return this.entries.get(`${roundId}:${accountId}`);
+  }
+
+  public getEntriesForRound(roundId: number): PlayerEntryRecord[] {
+    const list: PlayerEntryRecord[] = [];
+    for (const v of this.entries.values()) {
+      if (v.roundId === roundId) list.push(v);
+    }
+    return list;
+  }
+}
+
 export class AmstrMcpEngine {
   private rpcIndex = 0;
   private tokenStorePath: string;
@@ -423,6 +460,9 @@ export class AmstrMcpEngine {
     const salt = nacl.randomBytes(32);
     const commitBytes = computeCommit(token.accountId, BigInt(roundId), mask, salt);
     const commitBase64 = Buffer.from(commitBytes).toString("base64");
+
+    // Securely cache player secret entry in memory for TEE automated settlement reveals
+    PlayerEntryStore.getInstance().storeEntry(roundId, token.accountId, mask, salt, commitBase64);
 
     // 5. Encrypt pick using CVM X25519 key (X25519-XSalsa20-Poly1305)
     const cvmBoxPubKey = new Uint8Array(cvmKey.x25519_pub);

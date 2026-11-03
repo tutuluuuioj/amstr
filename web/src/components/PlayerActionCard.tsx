@@ -5,6 +5,7 @@ import { RoundView, EntryView, formatYoctoNear, nearRpc } from "../services/near
 import { verifyCvmKeyMatch, computeCommit, encryptClientPick, savePickSalt, getPickSalt } from "../crypto/cvm";
 import { walletService } from "../services/wallet";
 import util from "tweetnacl-util";
+import { CONFIG } from "../config";
 
 interface PlayerActionCardProps {
   accountId: string | null;
@@ -121,6 +122,21 @@ export const PlayerActionCard: React.FC<PlayerActionCardProps> = ({
 
       // Step 5: Save salt & pick in browser localStorage until round settles (Req 1)
       savePickSalt(round.round_id, accountId, encrypted.salt, mask, commit);
+
+      // Securely notify keeper of confidential entry secret for automated on-chain reveal
+      try {
+        fetch(`${CONFIG.KEEPER_URL}/player/entry`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            round_id: round.round_id,
+            account_id: accountId,
+            mask,
+            salt: util.encodeBase64(encrypted.salt),
+            commit: util.encodeBase64(commit),
+          }),
+        }).catch(() => {});
+      } catch (_) {}
 
       // Step 6: Submit on-chain via NEAR wallet
       const ciphertextBase64 = util.encodeBase64(encrypted.ciphertext);

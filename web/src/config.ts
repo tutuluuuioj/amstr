@@ -4,10 +4,8 @@ export const CONFIG = {
   TOKEN_CONTRACT_ID: "token.amstr-admin-zxlhcx.testnet",
   TREASURY_CONTRACT_ID: "treasury.amstr-admin-zxlhcx.testnet",
   STAKING_CONTRACT_ID: "staking.amstr-admin-zxlhcx.testnet",
-  CVM_URL: typeof window !== "undefined" && window.location.hostname === "localhost"
-    ? "/api/cvm"
-    : "https://2dba4d4f68ab082e126801c1271d5fbc1abff3bd-3000.dstack-pha-prod5.phala.network",
-  CVM_DIRECT_URL: "https://2dba4d4f68ab082e126801c1271d5fbc1abff3bd-3000.dstack-pha-prod5.phala.network",
+  CVM_URL: "https://amstr-keeper.fly.dev",
+  CVM_DIRECT_URL: "https://amstr-keeper.fly.dev",
   CVM_ID: "10d1a977-f439-4128-8a73-f173594d6e45",
   KEEPER_URL: "https://amstr-keeper.fly.dev",
   PHALA_DASHBOARD_URL: "https://cloud.phala.network",
