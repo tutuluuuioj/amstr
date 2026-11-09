@@ -137,4 +137,49 @@ export class NearChainSignaturesClient {
 
     return decoded as MpcSignature;
   }
+
+  /**
+   * Request Ed25519 signature from NEAR MPC v1.signer-prod.testnet (domain_id: 1)
+   * Suitable for Solana, Aptos, Sui native transactions.
+   */
+  public async requestEd25519Signature(
+    signerAccount: any,
+    payload32Bytes: Uint8Array,
+    path = "solana-1",
+    keyVersion = 0
+  ): Promise<Uint8Array> {
+    if (payload32Bytes.length !== 32) {
+      throw new Error(`Payload must be exactly 32 bytes, got ${payload32Bytes.length}`);
+    }
+
+    const payloadHex = Buffer.from(payload32Bytes).toString("hex");
+
+    const res = await signerAccount.functionCall({
+      contractId: MPC_TESTNET_CONTRACT,
+      methodName: "sign",
+      args: {
+        request: {
+          path,
+          payload_v2: {
+            Eddsa: payloadHex,
+          },
+          domain_id: 1,
+        },
+      },
+      gas: 250000000000000n,
+      attachedDeposit: 1n,
+    });
+
+    const decoded = JSON.parse(
+      Buffer.from(res.status?.SuccessValue || "e30=", "base64").toString("utf8")
+    );
+
+    if (Array.isArray(decoded?.signature)) {
+      return new Uint8Array(decoded.signature);
+    }
+    if (typeof decoded?.signature === "string") {
+      return new Uint8Array(Buffer.from(decoded.signature.replace("0x", ""), "hex"));
+    }
+    throw new Error("Invalid Ed25519 signature returned from MPC");
+  }
 }

@@ -42,6 +42,7 @@ export const CrossChainModal: React.FC<CrossChainModalProps> = ({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   // Payout state
+  const [payoutChain, setPayoutChain] = useState<"base" | "solana">("base");
   const [payoutRecipient, setPayoutRecipient] = useState("");
   const [payoutAmount, setPayoutAmount] = useState("0.005");
   const [isRequestingPayout, setIsRequestingPayout] = useState(false);
@@ -52,8 +53,12 @@ export const CrossChainModal: React.FC<CrossChainModalProps> = ({
     const chain = walletService.getConnectedChain();
     if (chain === "solana") {
       setSelectedChain("solana");
+      setPayoutChain("solana");
+      setPayoutAmount("0.02");
     } else if (chain === "evm") {
       setSelectedChain("base");
+      setPayoutChain("base");
+      setPayoutAmount("0.005");
     }
     const foreign = walletService.getForeignAddress();
     if (foreign) {
@@ -210,27 +215,40 @@ export const CrossChainModal: React.FC<CrossChainModalProps> = ({
 
   const handleRequestPayout = async () => {
     if (!payoutRecipient.trim()) {
-      setErrorMsg("Please enter an EVM recipient address (0x...)");
+      setErrorMsg(
+        payoutChain === "solana"
+          ? "Please enter a Solana recipient address (Base58)"
+          : "Please enter an EVM recipient address (0x...)"
+      );
       return;
     }
     setIsRequestingPayout(true);
     setErrorMsg(null);
     try {
       const keeperUrl = CONFIG.KEEPER_URL || "https://amstr-keeper.fly.dev";
+      const payload =
+        payoutChain === "solana"
+          ? {
+              recipientAddress: payoutRecipient.trim(),
+              amountSol: payoutAmount,
+              chain: "solana",
+            }
+          : {
+              recipientAddress: payoutRecipient.trim(),
+              amountEth: payoutAmount,
+              chain: "base",
+            };
+
       const res = await fetch(`${keeperUrl}/multichain/payout`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          recipientAddress: payoutRecipient.trim(),
-          amountEth: payoutAmount,
-          chain: "base",
-        }),
+        body: JSON.stringify(payload),
       });
       const data = await res.json();
       if (!res.ok || !data.success) {
         throw new Error(data.error || "Cross-chain payout request failed");
       }
-      setPayoutSuccessTx(data.payout?.txHash || "0x_confirmed");
+      setPayoutSuccessTx(data.payout?.txHash || data.payout?.signatureBase58 || "confirmed");
     } catch (err: any) {
       setErrorMsg(err.message || "Cross-chain payout request error");
     } finally {
@@ -520,45 +538,109 @@ export const CrossChainModal: React.FC<CrossChainModalProps> = ({
         {/* Tab 2: Outbound Payout */}
         {activeTab === "payout" && (
           <div className="space-y-4">
+            {/* Payout Chain Selector */}
+            <div className="flex space-x-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setPayoutChain("base");
+                  setPayoutAmount("0.005");
+                  const foreign = walletService.getForeignAddress();
+                  if (foreign && foreign.startsWith("0x")) setPayoutRecipient(foreign);
+                  else setPayoutRecipient("");
+                }}
+                className={`flex-1 py-1.5 px-2 rounded-sm border text-xs font-mono transition-colors text-center ${
+                  payoutChain === "base"
+                    ? "border-[#0052FF] bg-[#0052FF]/10 text-[#0052FF] font-bold"
+                    : "border-[#2A2620] text-[#8C8478] hover:text-[#EDE6DA]"
+                }`}
+              >
+                Base (ETH)
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setPayoutChain("solana");
+                  setPayoutAmount("0.02");
+                  const foreign = walletService.getForeignAddress();
+                  if (foreign && !foreign.startsWith("0x")) setPayoutRecipient(foreign);
+                  else setPayoutRecipient("");
+                }}
+                className={`flex-1 py-1.5 px-2 rounded-sm border text-xs font-mono transition-colors text-center ${
+                  payoutChain === "solana"
+                    ? "border-[#9945FF] bg-[#9945FF]/10 text-[#9945FF] font-bold"
+                    : "border-[#2A2620] text-[#8C8478] hover:text-[#EDE6DA]"
+                }`}
+              >
+                Solana (SOL)
+              </button>
+            </div>
+
             <div className="p-3 rounded-sm bg-[#0E0D0B] border border-[#2A2620] space-y-2.5">
               <div className="text-xs font-bold text-[#EDE6DA]">
-                Sweep Winnings to Base / EVM Address
+                {payoutChain === "solana"
+                  ? "Sweep Winnings to Solana (Native SOL)"
+                  : "Sweep Winnings to Base / EVM Address"}
               </div>
               <p className="text-[11px] text-[#8C8478]">
-                Uses NEAR Chain Signatures to execute an outbound native transfer directly to your external EVM wallet (MetaMask, Coinbase Wallet).
+                {payoutChain === "solana"
+                  ? "Uses NEAR Chain Signatures (Ed25519) to execute an outbound native SOL transfer directly to your Phantom wallet on Solana Devnet."
+                  : "Uses NEAR Chain Signatures (ECDSA) to execute an outbound native transfer directly to your external EVM wallet on Base Sepolia."}
               </p>
 
               <div className="space-y-2 pt-1">
                 <div>
                   <label className="text-[10px] text-[#8C8478]">
-                    Recipient Address (Base / EVM):
+                    {payoutChain === "solana"
+                      ? "Recipient Address (Solana Base58):"
+                      : "Recipient Address (Base / EVM):"}
                   </label>
                   <input
                     type="text"
                     value={payoutRecipient}
                     onChange={(e) => setPayoutRecipient(e.target.value)}
-                    placeholder="0x..."
+                    placeholder={payoutChain === "solana" ? "e.g. 7bSJ4... or Phantom address" : "0x..."}
                     className="w-full bg-[#1A1815] border border-[#2A2620] rounded-sm px-2.5 py-1.5 text-xs font-mono text-[#EDE6DA]"
                   />
                 </div>
 
                 <div>
                   <label className="text-[10px] text-[#8C8478]">
-                    Amount (ETH on Base):
+                    {payoutChain === "solana"
+                      ? "Amount (SOL on Solana):"
+                      : "Amount (ETH on Base):"}
                   </label>
                   <input
                     type="text"
                     value={payoutAmount}
                     onChange={(e) => setPayoutAmount(e.target.value)}
-                    placeholder="0.005"
+                    placeholder={payoutChain === "solana" ? "0.02" : "0.005"}
                     className="w-full bg-[#1A1815] border border-[#2A2620] rounded-sm px-2.5 py-1.5 text-xs font-mono text-[#EDE6DA]"
                   />
                 </div>
               </div>
 
               {payoutSuccessTx && (
-                <div className="p-2 rounded-sm bg-[#22C55E]/10 border border-[#22C55E]/30 text-[#22C55E] text-xs font-mono break-all">
-                  ✓ Payout Tx Broadcasted: {payoutSuccessTx}
+                <div className="p-2.5 rounded-sm bg-[#22C55E]/10 border border-[#22C55E]/30 space-y-1">
+                  <div className="text-[#22C55E] text-xs font-bold font-mono">
+                    ✓ {payoutChain === "solana" ? "Solana" : "Base"} Payout Broadcasted!
+                  </div>
+                  <div className="text-[11px] font-mono text-[#EDE6DA] break-all">
+                    Tx: {payoutSuccessTx}
+                  </div>
+                  <a
+                    href={
+                      payoutChain === "solana"
+                        ? `https://explorer.solana.com/tx/${payoutSuccessTx}?cluster=devnet`
+                        : `https://sepolia.basescan.org/tx/${payoutSuccessTx}`
+                    }
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center text-[11px] text-[#22C55E] hover:underline pt-0.5"
+                  >
+                    <span>View on {payoutChain === "solana" ? "Solana Explorer (Devnet)" : "BaseScan"}</span>
+                    <ExternalLink className="w-3 h-3 ml-1" />
+                  </a>
                 </div>
               )}
 
@@ -566,13 +648,17 @@ export const CrossChainModal: React.FC<CrossChainModalProps> = ({
                 type="button"
                 onClick={handleRequestPayout}
                 disabled={isRequestingPayout}
-                className="w-full py-2.5 px-3 rounded-sm bg-[#22C55E] hover:bg-[#20b857] text-[#0E0D0B] font-bold text-xs transition-colors flex items-center justify-center space-x-1.5 shadow-sm disabled:opacity-50"
+                className={`w-full py-2.5 px-3 rounded-sm font-bold text-xs transition-colors flex items-center justify-center space-x-1.5 shadow-sm disabled:opacity-50 ${
+                  payoutChain === "solana"
+                    ? "bg-[#9945FF] hover:bg-[#8338eb] text-white"
+                    : "bg-[#0052FF] hover:bg-[#0045d8] text-white"
+                }`}
               >
                 {isRequestingPayout ? (
                   <Loader2 className="w-4 h-4 animate-spin" />
                 ) : (
                   <>
-                    <span>Sign & Broadcast via NEAR MPC</span>
+                    <span>Sign & Broadcast {payoutChain === "solana" ? "SOL" : "ETH"} via NEAR MPC</span>
                     <Sparkles className="w-3.5 h-3.5" />
                   </>
                 )}

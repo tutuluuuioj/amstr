@@ -137,4 +137,75 @@ describe("Track 1: CVM Chain Signatures & Multichain Engine", () => {
     assert.strictEqual(status.found, true);
     assert.strictEqual((status as any).intent.intentId, intent.intentId);
   });
+
+  it("builds and serializes valid Solana native transfer wire messages", () => {
+    const fromAddress = "7bSJ4puJNp4L2Eo46n1Vx7LYx93jG8r3HMzKrwzjUuiQ";
+    const toAddress = "5EiSMs1FBCHvGMnbM5UZJXbQ4RY5o2KPeJuC1SbNi6BC";
+    const recentBlockhash = "DNLQwZxyFeo7xjJ8KjvA6qZ4uwfJdZnohyKLdKsuVZZG";
+    const lamports = 10000000; // 0.01 SOL
+
+    const { messageBytes, messageHash } = crossChainRelayer.buildSolanaTransferMessage({
+      fromAddress,
+      toAddress,
+      lamports,
+      recentBlockhash,
+    });
+
+    assert.strictEqual(messageBytes.length, 150);
+    assert.strictEqual(messageHash.length, 32);
+
+    // Verify header [1, 0, 1]
+    assert.strictEqual(messageBytes[0], 1);
+    assert.strictEqual(messageBytes[1], 0);
+    assert.strictEqual(messageBytes[2], 1);
+
+    // Verify accounts count
+    assert.strictEqual(messageBytes[3], 3);
+
+    // Verify instruction count & SystemProgram transfer index (2)
+    const insStart = 3 + 1 + 32 * 3 + 32;
+    assert.strictEqual(messageBytes[insStart], 1); // 1 instruction
+    assert.strictEqual(messageBytes[insStart + 1], 2); // programIdIndex 2 (SystemProgram)
+  });
+
+  it("assembles valid 64-byte Ed25519 signed Solana wire transactions", () => {
+    const fromAddress = "7bSJ4puJNp4L2Eo46n1Vx7LYx93jG8r3HMzKrwzjUuiQ";
+    const toAddress = "5EiSMs1FBCHvGMnbM5UZJXbQ4RY5o2KPeJuC1SbNi6BC";
+    const recentBlockhash = "DNLQwZxyFeo7xjJ8KjvA6qZ4uwfJdZnohyKLdKsuVZZG";
+
+    const { messageBytes } = crossChainRelayer.buildSolanaTransferMessage({
+      fromAddress,
+      toAddress,
+      lamports: 5000000,
+      recentBlockhash,
+    });
+
+    const mockSig = new Uint8Array(64).fill(0x7a);
+    const wireTx = crossChainRelayer.assembleSignedSolanaTransaction(messageBytes, mockSig);
+
+    // Expected length = 1 (num_sigs) + 64 (sig) + 150 (message) = 215 bytes
+    assert.strictEqual(wireTx.length, 215);
+    assert.strictEqual(wireTx[0], 1);
+    assert.strictEqual(wireTx[1], 0x7a);
+    assert.strictEqual(wireTx[64], 0x7a);
+  });
+
+  it("executes Solana outbound payout generating valid Base58 signature and wire tx", async () => {
+    const recipient = "5EiSMs1FBCHvGMnbM5UZJXbQ4RY5o2KPeJuC1SbNi6BC";
+    const mockSigner = { accountId: "game.amstr-admin-zxlhcx.testnet" };
+
+    const payout = await crossChainRelayer.executeSolanaPayout(
+      mockSigner,
+      recipient,
+      "0.02",
+      "solana-1"
+    );
+
+    assert.ok(payout.txHash);
+    assert.ok(payout.rawTxBase64);
+    assert.ok(payout.signatureBase58);
+    assert.strictEqual(payout.txHash, payout.signatureBase58);
+    // Base58 signature should be 86-90 chars
+    assert.ok(payout.signatureBase58.length >= 80 && payout.signatureBase58.length <= 92);
+  });
 });

@@ -978,19 +978,29 @@ async function main() {
       return;
     }
 
-    // Multichain Outbound Payout via NEAR Chain Signatures
+    // Multichain Outbound Payout via NEAR Chain Signatures (EVM & Solana)
     if (pathname === "/multichain/payout" && req.method === "POST") {
       let body = "";
       req.on("data", (chunk) => { body += chunk; });
       req.on("end", async () => {
         try {
-          const { recipientAddress, amountEth, chain } = JSON.parse(body || "{}");
-          const payout = await crossChainRelayer.executeCrossChainPayout(
-            runner.getAccount(),
-            recipientAddress,
-            amountEth || "0.005",
-            `${chain || "base"}-1`
-          );
+          const { recipientAddress, amountEth, amountSol, chain } = JSON.parse(body || "{}");
+          let payout;
+          if (chain === "solana") {
+            payout = await crossChainRelayer.executeSolanaPayout(
+              runner.getAccount(),
+              recipientAddress,
+              amountSol || "0.01",
+              "solana-1"
+            );
+          } else {
+            payout = await crossChainRelayer.executeCrossChainPayout(
+              runner.getAccount(),
+              recipientAddress,
+              amountEth || "0.005",
+              `${chain || "base"}-1`
+            );
+          }
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ success: true, payout }));
         } catch (err: any) {
