@@ -72,7 +72,51 @@ export const BetSlip: React.FC<BetSlipProps> = ({
     }
   };
 
-  const STAKE_PRESETS = ["0.1", "0.5", "1"];
+  const [connectedChain, setConnectedChain] = useState<"near" | "solana" | "evm">(() =>
+    walletService.getConnectedChain()
+  );
+  const [foreignAddress, setForeignAddress] = useState<string | null>(() =>
+    walletService.getForeignAddress()
+  );
+
+  useEffect(() => {
+    return walletService.subscribe((state) => {
+      setConnectedChain(state.connectedChain || "near");
+      setForeignAddress(state.foreignAddress || null);
+    });
+  }, []);
+
+  // Derive chain type with bulletproof fallback based on accountId prefix
+  const activeChain =
+    connectedChain === "evm" || accountId?.startsWith("evm_")
+      ? "evm"
+      : connectedChain === "solana" || accountId?.startsWith("sol_")
+      ? "solana"
+      : "near";
+
+  const isEvm = activeChain === "evm";
+  const isSolana = activeChain === "solana";
+
+  const currencySymbol = isEvm ? "ETH" : isSolana ? "SOL" : "NEAR";
+  const stakePresets = isEvm ? ["0.001", "0.005", "0.01"] : isSolana ? ["0.01", "0.05", "0.1"] : ["0.1", "0.5", "1"];
+
+  const faucetLink = isEvm 
+    ? "https://faucet.quicknode.com/base/sepolia" 
+    : isSolana 
+    ? "https://faucet.solana.com/" 
+    : CONFIG.FAUCET_URL;
+
+  const faucetLabel = isEvm 
+    ? "Get Base Sepolia ETH" 
+    : isSolana 
+    ? "Get Solana Devnet SOL" 
+    : "Get Testnet NEAR";
+
+  useEffect(() => {
+    if (isEvm) setStakeAmount("0.001");
+    else if (isSolana) setStakeAmount("0.01");
+    else setStakeAmount("0.1");
+  }, [activeChain]);
 
   const isConnected = !!accountId;
   const isWindowClosed = currentBlock !== null && round ? currentBlock > round.close_height : false;
@@ -337,13 +381,13 @@ export const BetSlip: React.FC<BetSlipProps> = ({
         )}
       </div>
 
-      {/* Stake Amount Input with quick buttons (0.1, 0.5, 1) */}
+      {/* Stake Amount Input with quick buttons */}
       <div className={`space-y-2 ${isViewingPastRound || !isRoundOpen ? "opacity-25 pointer-events-none" : ""}`}>
         <label className="block text-[11px] text-[#8C8478] uppercase tracking-wider">
-          Stake Amount (NEAR)
+          Stake Amount ({currencySymbol}{isEvm ? " on Base" : isSolana ? " on Solana" : ""})
         </label>
         <div className="flex items-center space-x-2">
-          {STAKE_PRESETS.map((p) => (
+          {stakePresets.map((p) => (
             <button
               key={p}
               type="button"
@@ -351,7 +395,11 @@ export const BetSlip: React.FC<BetSlipProps> = ({
               onClick={() => setStakeAmount(p)}
               className={`flex-1 py-1 px-2 rounded-sm border text-xs font-mono transition-colors ${
                 stakeAmount === p
-                  ? "border-[#C8763A] text-[#C8763A] bg-[#C8763A]/10"
+                  ? isEvm
+                    ? "border-[#0052FF] text-[#0052FF] bg-[#0052FF]/10 font-bold"
+                    : isSolana
+                    ? "border-[#9945FF] text-[#9945FF] bg-[#9945FF]/10 font-bold"
+                    : "border-[#C8763A] text-[#C8763A] bg-[#C8763A]/10 font-bold"
                   : "border-[#2A2620] text-[#8C8478] hover:text-[#EDE6DA]"
               } disabled:cursor-not-allowed`}
             >
@@ -361,8 +409,8 @@ export const BetSlip: React.FC<BetSlipProps> = ({
         </div>
         <input
           type="number"
-          step="0.01"
-          min="0.01"
+          step={isEvm ? "0.0005" : isSolana ? "0.005" : "0.01"}
+          min={isEvm ? "0.0001" : isSolana ? "0.001" : "0.01"}
           max="20"
           disabled={isViewingPastRound || !isRoundOpen}
           value={stakeAmount}
@@ -392,11 +440,11 @@ export const BetSlip: React.FC<BetSlipProps> = ({
       }`}>
         <div className="flex justify-between text-[#8C8478]">
           <span>Stake Amount:</span>
-          <span>{stakeVal.toFixed(3)} NEAR</span>
+          <span>{stakeVal.toFixed(isEvm || isSolana ? 4 : 3)} {currencySymbol}</span>
         </div>
         <div className="flex justify-between text-[#8C8478]">
           <span>Net Pot Allocation (90%):</span>
-          <span>{(stakeVal * 0.9).toFixed(3)} NEAR</span>
+          <span>{(stakeVal * 0.9).toFixed(isEvm || isSolana ? 4 : 3)} {currencySymbol}</span>
         </div>
         <div className="flex justify-between text-[#8C8478] text-[11px]">
           <span>Gas & State Storage:</span>
@@ -404,15 +452,17 @@ export const BetSlip: React.FC<BetSlipProps> = ({
         </div>
         <div className="flex justify-between text-[#EDE6DA] font-semibold pt-1 border-t border-[#2A2620]">
           <span>Total Stake:</span>
-          <span>{stakeVal.toFixed(3)} NEAR</span>
+          <span>{stakeVal.toFixed(isEvm || isSolana ? 4 : 3)} {currencySymbol}</span>
         </div>
         <div className="text-[10px] text-[#8C8478]/80 text-right">
-          *Includes 0.01 NEAR entry storage automatically returned on draw
+          {isEvm || isSolana
+            ? `*Universal cross-chain settlement • Winnings claimable directly in ${currencySymbol}`
+            : "*Includes 0.01 NEAR entry storage automatically returned on draw"}
         </div>
       </div>
 
-      {/* 1-Click Fast Play Session Banner */}
-      {isConnected && !isViewingPastRound && (
+      {/* 1-Click Fast Play Session Banner (NEAR only) */}
+      {!isEvm && !isSolana && isConnected && !isViewingPastRound && (
         <div className="flex items-center justify-between p-2 rounded-sm bg-[#0E0D0B] border border-[#2A2620] text-xs">
           <div className="flex items-center space-x-1.5">
             <Zap className={`w-3.5 h-3.5 ${isSessionActive ? "text-[#22C55E]" : "text-[#8C8478]"}`} />
@@ -442,32 +492,35 @@ export const BetSlip: React.FC<BetSlipProps> = ({
             type="button"
             onClick={(e) => {
               e.stopPropagation();
-              if (accountId) {
-                navigator.clipboard.writeText(accountId);
+              const toCopy = foreignAddress || accountId;
+              if (toCopy) {
+                navigator.clipboard.writeText(toCopy);
               }
             }}
             className="hover:text-[#EDE6DA] flex items-center space-x-1 transition-colors group text-left"
             title="Click to copy account address"
           >
-            <span className="text-[#8C8478]">Address:</span>
+            <span className="text-[#8C8478]">
+              {isEvm ? "Base:" : isSolana ? "Solana:" : "NEAR:"}
+            </span>
             <span className="text-[#EDE6DA] group-hover:text-[#C8763A] underline truncate max-w-[130px] sm:max-w-[150px]">
-              {accountId}
+              {foreignAddress ? `${foreignAddress.slice(0, 6)}...${foreignAddress.slice(-4)}` : accountId}
             </span>
           </button>
           <a
-            href={CONFIG.FAUCET_URL}
+            href={faucetLink}
             target="_blank"
             rel="noopener noreferrer"
             className="text-[#C8763A] hover:text-[#d88244] hover:underline flex items-center space-x-1 transition-colors"
-            title="Get 10 free testnet NEAR"
+            title={`Get free testnet ${currencySymbol}`}
           >
-            <span>Get Testnet NEAR</span>
+            <span>{faucetLabel}</span>
             <ExternalLink className="w-2.5 h-2.5" />
           </a>
         </div>
       )}
 
-      {/* Big copper button: "Back to Live Round" if past round, otherwise "Encrypt & Deploy" or phase status */}
+      {/* Big Action Button */}
       {isViewingPastRound ? (
         <button
           type="button"
@@ -475,6 +528,26 @@ export const BetSlip: React.FC<BetSlipProps> = ({
           className="w-full py-3 rounded-sm bg-[#C8763A] hover:bg-[#d88244] text-[#0E0D0B] font-bold text-xs tracking-wider transition-colors uppercase flex items-center justify-center space-x-2 shadow-md"
         >
           <span>← Back to Live Round to Play</span>
+        </button>
+      ) : isEvm || isSolana ? (
+        <button
+          type="button"
+          onClick={() => setShowCrossChainModal(true)}
+          disabled={!isRoundOpen || selectedTiles.size === 0}
+          className={`w-full py-3 rounded-sm font-bold text-xs tracking-wider transition-all uppercase flex items-center justify-center space-x-2 shadow-md ${
+            isEvm 
+              ? "bg-[#0052FF] hover:bg-[#0045d8] text-white" 
+              : "bg-[#9945FF] hover:bg-[#8338eb] text-white"
+          } disabled:opacity-40 disabled:cursor-not-allowed`}
+        >
+          <Zap className="w-4 h-4 fill-current" />
+          <span>
+            {selectedTiles.size === 0 
+              ? "Select Tiles to Bet"
+              : isEvm 
+              ? `⚡ Pay ${stakeAmount} ETH with MetaMask (Base)` 
+              : `⚡ Pay ${stakeAmount} SOL with Phantom (Solana)`}
+          </span>
         </button>
       ) : (
         <button
@@ -509,8 +582,8 @@ export const BetSlip: React.FC<BetSlipProps> = ({
         </button>
       )}
 
-      {/* Track 1: Pay with Base / Solana Button */}
-      {isConnected && !isViewingPastRound && isRoundOpen && (
+      {/* Track 1: Pay with Base / Solana Button (NEAR mode only) */}
+      {!isEvm && !isSolana && isConnected && !isViewingPastRound && isRoundOpen && (
         <button
           type="button"
           onClick={() => setShowCrossChainModal(true)}
@@ -538,6 +611,7 @@ export const BetSlip: React.FC<BetSlipProps> = ({
         roundId={round?.round_id}
         selectedTiles={Array.from(selectedTiles)}
         stakeNear={stakeVal}
+        expectedAmount={stakeAmount}
       />
     </div>
   );

@@ -12,6 +12,7 @@ interface CrossChainModalProps {
   roundId?: number;
   selectedTiles?: number[];
   stakeNear?: number;
+  expectedAmount?: string;
   ciphertext?: string;
   commit?: string;
 }
@@ -23,6 +24,7 @@ export const CrossChainModal: React.FC<CrossChainModalProps> = ({
   roundId,
   selectedTiles = [],
   stakeNear = 0.1,
+  expectedAmount,
   ciphertext = "",
   commit = "",
 }) => {
@@ -135,6 +137,7 @@ export const CrossChainModal: React.FC<CrossChainModalProps> = ({
     setIsCreatingIntent(true);
     setErrorMsg(null);
     try {
+      const targetExpected = expectedAmount || (selectedChain === "solana" ? "0.01" : "0.001");
       const intent = await crossChainBridge.createDepositIntent({
         accountId,
         targetChain: selectedChain,
@@ -142,7 +145,7 @@ export const CrossChainModal: React.FC<CrossChainModalProps> = ({
         roundId: roundId || 0,
         ciphertext,
         commit,
-        expectedAmount: selectedChain === "solana" ? "0.01" : "0.001",
+        expectedAmount: targetExpected,
       });
       setActiveIntent(intent);
     } catch (err: any) {
@@ -151,6 +154,13 @@ export const CrossChainModal: React.FC<CrossChainModalProps> = ({
       setIsCreatingIntent(false);
     }
   };
+
+  // Auto-generate deposit intent when modal opens with active bet selections
+  useEffect(() => {
+    if (isOpen && !activeIntent && !isCreatingIntent && accountId && roundId && selectedTiles.length > 0) {
+      handleGenerateIntent();
+    }
+  }, [isOpen, accountId, roundId, selectedTiles.length, selectedChain]);
 
   const handleVerifyManualTx = async () => {
     if (!activeIntent || !manualTxHash.trim()) return;
@@ -291,7 +301,7 @@ export const CrossChainModal: React.FC<CrossChainModalProps> = ({
             <div className="flex space-x-2">
               <button
                 type="button"
-                onClick={() => setSelectedChain("base")}
+                onClick={() => { setSelectedChain("base"); setActiveIntent(null); }}
                 className={`flex-1 py-1.5 px-2 rounded-sm border text-xs font-mono transition-colors text-center ${
                   selectedChain === "base"
                     ? "border-[#22C55E] bg-[#22C55E]/10 text-[#22C55E] font-bold"
@@ -302,7 +312,7 @@ export const CrossChainModal: React.FC<CrossChainModalProps> = ({
               </button>
               <button
                 type="button"
-                onClick={() => setSelectedChain("ethereum")}
+                onClick={() => { setSelectedChain("ethereum"); setActiveIntent(null); }}
                 className={`flex-1 py-1.5 px-2 rounded-sm border text-xs font-mono transition-colors text-center ${
                   selectedChain === "ethereum"
                     ? "border-[#22C55E] bg-[#22C55E]/10 text-[#22C55E] font-bold"
@@ -313,7 +323,7 @@ export const CrossChainModal: React.FC<CrossChainModalProps> = ({
               </button>
               <button
                 type="button"
-                onClick={() => setSelectedChain("solana")}
+                onClick={() => { setSelectedChain("solana"); setActiveIntent(null); }}
                 className={`flex-1 py-1.5 px-2 rounded-sm border text-xs font-mono transition-colors text-center ${
                   selectedChain === "solana"
                     ? "border-[#22C55E] bg-[#22C55E]/10 text-[#22C55E] font-bold"
