@@ -55,8 +55,9 @@ export const TopBar: React.FC<TopBarProps> = ({
 
   const handleCopyAccountId = (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!accountId) return;
-    navigator.clipboard.writeText(accountId);
+    const toCopy = walletService.getForeignAddress() || accountId;
+    if (!toCopy) return;
+    navigator.clipboard.writeText(toCopy);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
@@ -175,8 +176,15 @@ export const TopBar: React.FC<TopBarProps> = ({
                 title="Click to copy account ID"
               >
                 <div className="flex items-center space-x-1.5">
+                  {walletService.getConnectedChain() === "solana" ? (
+                    <span className="w-2 h-2 rounded-full bg-[#9945FF] animate-pulse mr-0.5" title="Solana Devnet"></span>
+                  ) : walletService.getConnectedChain() === "evm" ? (
+                    <span className="w-2 h-2 rounded-full bg-[#0052FF] animate-pulse mr-0.5" title="Base Sepolia"></span>
+                  ) : null}
                   <span className="font-mono text-xs text-[#EDE6DA] group-hover:text-[#C8763A] transition-colors max-w-[110px] sm:max-w-[150px] truncate">
-                    {accountId}
+                    {walletService.getForeignAddress()
+                      ? `${walletService.getForeignAddress()!.slice(0, 4)}...${walletService.getForeignAddress()!.slice(-4)}`
+                      : accountId}
                   </span>
                   <button
                     type="button"
@@ -197,10 +205,18 @@ export const TopBar: React.FC<TopBarProps> = ({
                   )}
                 </div>
                 <span className="font-mono text-[10px] text-[#8C8478] flex items-center space-x-1.5 flex-wrap">
-                  <span>{formatYoctoNear(nearBalance, 2)} NEAR</span>
-                  <span>•</span>
-                  <span>{formatYoctoAmstr(amstrBalance, 2)} AMSTR</span>
-                  {(nearBalance === "0" || nearBalance === "0.00" || !nearBalance) && passkeyService.getSavedPasskeyAccount() && (
+                  {walletService.getConnectedChain() === "solana" ? (
+                    <span className="text-[#9945FF] font-medium">Solana Devnet</span>
+                  ) : walletService.getConnectedChain() === "evm" ? (
+                    <span className="text-[#0052FF] font-medium">Base Sepolia</span>
+                  ) : (
+                    <>
+                      <span>{formatYoctoNear(nearBalance, 2)} NEAR</span>
+                      <span>•</span>
+                      <span>{formatYoctoAmstr(amstrBalance, 2)} AMSTR</span>
+                    </>
+                  )}
+                  {walletService.getConnectedChain() === "near" && (nearBalance === "0" || nearBalance === "0.00" || !nearBalance) && passkeyService.getSavedPasskeyAccount() && (
                     <button
                       type="button"
                       onClick={handleActivateAccount}

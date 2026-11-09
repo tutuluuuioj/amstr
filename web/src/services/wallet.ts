@@ -18,6 +18,8 @@ export interface WalletContextState {
   accountId: string | null;
   isSessionActive?: boolean;
   sessionState?: SessionKeyState;
+  connectedChain?: "near" | "solana" | "evm";
+  foreignAddress?: string | null;
 }
 
 class WalletService {
@@ -25,12 +27,22 @@ class WalletService {
   private modal: WalletSelectorModal | null = null;
   private accounts: AccountState[] = [];
   private devAccountId: string | null = null;
+  private connectedChain: "near" | "solana" | "evm" = "near";
+  private foreignAddress: string | null = null;
   private listeners: ((state: WalletContextState) => void)[] = [];
 
   public async init(): Promise<WalletContextState> {
     const savedDev = localStorage.getItem("amstr_dev_account");
     if (savedDev) {
       this.devAccountId = savedDev;
+    }
+    const savedChain = localStorage.getItem("amstr_connected_chain") as any;
+    if (savedChain) {
+      this.connectedChain = savedChain;
+    }
+    const savedForeign = localStorage.getItem("amstr_foreign_address");
+    if (savedForeign) {
+      this.foreignAddress = savedForeign;
     }
 
     // Auto-verify & fund Passkey account on-chain via official NEAR helper
@@ -76,8 +88,44 @@ class WalletService {
 
   public connectDevAccount(accountId: string): void {
     this.devAccountId = accountId;
+    this.connectedChain = "near";
+    this.foreignAddress = null;
     localStorage.setItem("amstr_dev_account", accountId);
+    localStorage.removeItem("amstr_connected_chain");
+    localStorage.removeItem("amstr_foreign_address");
     this.notify();
+  }
+
+  public connectSolanaWallet(solAddress: string): void {
+    const clean = solAddress.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 14);
+    const accountId = `sol_${clean}.testnet`;
+    this.devAccountId = accountId;
+    this.connectedChain = "solana";
+    this.foreignAddress = solAddress;
+    localStorage.setItem("amstr_dev_account", accountId);
+    localStorage.setItem("amstr_connected_chain", "solana");
+    localStorage.setItem("amstr_foreign_address", solAddress);
+    this.notify();
+  }
+
+  public connectEvmWallet(evmAddress: string): void {
+    const clean = evmAddress.toLowerCase().replace("0x", "").slice(0, 14);
+    const accountId = `evm_${clean}.testnet`;
+    this.devAccountId = accountId;
+    this.connectedChain = "evm";
+    this.foreignAddress = evmAddress;
+    localStorage.setItem("amstr_dev_account", accountId);
+    localStorage.setItem("amstr_connected_chain", "evm");
+    localStorage.setItem("amstr_foreign_address", evmAddress);
+    this.notify();
+  }
+
+  public getConnectedChain(): "near" | "solana" | "evm" {
+    return this.connectedChain;
+  }
+
+  public getForeignAddress(): string | null {
+    return this.foreignAddress;
   }
 
   public getState(): WalletContextState {
@@ -94,6 +142,8 @@ class WalletService {
       accountId,
       isSessionActive: sessionState.isActive,
       sessionState,
+      connectedChain: this.connectedChain,
+      foreignAddress: this.foreignAddress,
     };
   }
 
@@ -142,7 +192,11 @@ class WalletService {
   public async signOut(): Promise<void> {
     if (this.devAccountId) {
       this.devAccountId = null;
+      this.connectedChain = "near";
+      this.foreignAddress = null;
       localStorage.removeItem("amstr_dev_account");
+      localStorage.removeItem("amstr_connected_chain");
+      localStorage.removeItem("amstr_foreign_address");
       this.notify();
       return;
     }
