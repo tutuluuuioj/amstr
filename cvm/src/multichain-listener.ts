@@ -106,8 +106,14 @@ export class MultichainListener {
       throw new Error(`Deposit intent ${intentId} not found`);
     }
 
-    if (this.processedTxHashes.has(txHash) && intent.status === "bet_deployed") {
-      return intent;
+    if (this.processedTxHashes.has(txHash)) {
+      if (intent.status === "bet_deployed") {
+        return intent;
+      }
+      intent.status = "failed";
+      intent.error = `Replay prevented: transaction ${txHash} has already been processed for another intent.`;
+      intent.updatedAt = Date.now();
+      throw new Error(`Double-spend prevented: transaction ${txHash} has already been processed.`);
     }
 
     intent.txHash = txHash;
@@ -115,7 +121,24 @@ export class MultichainListener {
     intent.updatedAt = Date.now();
 
     try {
-      // Query foreign chain RPC for receipt
+      // 1. Query full transaction to verify value transferred
+      const tx = await this.queryEvmTransaction(txHash, intent.targetChain);
+      if (!tx) {
+        intent.confirmations = 0;
+        return intent;
+      }
+
+      // Verify transferred value satisfies expected deposit
+      const expectedWei = BigInt(Math.floor(parseFloat(intent.expectedAmount) * 1e6)) * 10n ** 12n;
+      const actualWei = BigInt(tx.value || "0x0");
+      if (actualWei < expectedWei) {
+        intent.status = "failed";
+        intent.error = `Insufficient deposit: received ${actualWei.toString()} Wei, required at least ${expectedWei.toString()} Wei`;
+        intent.updatedAt = Date.now();
+        return intent;
+      }
+
+      // 2. Query foreign chain RPC for receipt
       const receipt = await this.queryEvmReceipt(txHash, intent.targetChain);
       
       if (!receipt) {
@@ -132,7 +155,7 @@ export class MultichainListener {
       }
 
       // Verify recipient matches user's derived address
-      const toAddr = (receipt.to || "").toLowerCase();
+      const toAddr = (receipt.to || tx.to || "").toLowerCase();
       if (toAddr !== intent.derivedAddress.toLowerCase()) {
         intent.status = "failed";
         intent.error = `Transaction recipient ${toAddr} does not match derived address ${intent.derivedAddress}`;
@@ -151,7 +174,7 @@ export class MultichainListener {
 
       if (confs >= this.config.requiredConfirmations) {
         // Execute NEAR deploy on behalf of the player
-        console.log(`[Multichain Listener] Foreign deposit verified (${confs} confs). Placing NEAR bet for ${intent.accountId}...`);
+        console.log(`[Multichain Listener] Foreign deposit verified (${confs} confs, value: ${actualWei.toString()} Wei). Placing NEAR bet for ${intent.accountId}...`);
         const nearTx = await deployBetCallback(intent);
         intent.status = "bet_deployed";
         intent.nearTxHash = nearTx;
@@ -165,6 +188,27 @@ export class MultichainListener {
       intent.error = err.message;
       intent.updatedAt = Date.now();
       return intent;
+    }
+  }
+
+  private async queryEvmTransaction(txHash: string, targetChain: string): Promise<any> {
+    const rpcUrl = targetChain === "ethereum" ? this.config.ethRpcUrl : this.config.baseRpcUrl;
+    try {
+      const res = await fetch(rpcUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 10,
+          method: "eth_getTransactionByHash",
+          params: [txHash],
+        }),
+      });
+      const data = (await res.json()) as any;
+      return data.result;
+    } catch (err) {
+      console.warn(`Could not reach RPC ${rpcUrl} for tx:`, err);
+      return null;
     }
   }
 

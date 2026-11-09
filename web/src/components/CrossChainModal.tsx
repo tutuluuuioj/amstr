@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import { X, Copy, Check, ExternalLink, ArrowRight, Loader2, Sparkles, RefreshCw, ShieldCheck } from "lucide-react";
 import { crossChainBridge, DepositIntent } from "../services/crosschainBridge";
 import { getDerivedForeignAccounts, DerivedForeignAccounts } from "../services/chainSig";
+import { CONFIG } from "../config";
 
 interface CrossChainModalProps {
   isOpen: boolean;
@@ -124,7 +125,8 @@ export const CrossChainModal: React.FC<CrossChainModalProps> = ({
     setIsRequestingPayout(true);
     setErrorMsg(null);
     try {
-      const res = await fetch("https://amstr-keeper.fly.dev/multichain/payout", {
+      const keeperUrl = CONFIG.KEEPER_URL || "https://amstr-keeper.fly.dev";
+      const res = await fetch(`${keeperUrl}/multichain/payout`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

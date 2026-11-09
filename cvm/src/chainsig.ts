@@ -30,7 +30,8 @@ export function deriveChildSecp256k1PublicKey(
 ): string {
   const rootPoint = secp256k1.ProjectivePoint.fromHex(rootPubHex);
   const tweakBytes = computeDerivationTweak(accountId, path);
-  const scalar = BigInt("0x" + Buffer.from(tweakBytes).toString("hex"));
+  // Scalar modulo curve order for strict mathematical defense-in-depth
+  const scalar = BigInt("0x" + Buffer.from(tweakBytes).toString("hex")) % secp256k1.CURVE.n;
 
   const tweakPoint = secp256k1.ProjectivePoint.BASE.multiply(scalar);
   const childPoint = rootPoint.add(tweakPoint);

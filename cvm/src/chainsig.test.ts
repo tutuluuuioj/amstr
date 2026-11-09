@@ -58,18 +58,61 @@ describe("Track 1: CVM Chain Signatures & Multichain Engine", () => {
     assert.deepStrictEqual(retrieved, intent);
   });
 
-  it("computes consistent 32-byte Keccak-256 hash for outbound EVM transactions", () => {
+  it("computes consistent 32-byte Keccak-256 hash for outbound EVM transactions using standard RLP", () => {
     const tx = {
       to: "0x4150cd29bba624e5bc918c15eb9343aefc867b9b",
       valueWei: "1000000000000000",
       nonce: 1,
       gasLimit: 21000,
+      gasPriceGwei: 1.5,
       chainId: 84532,
     };
 
-    const { payload32Bytes, hashHex } = crossChainRelayer.computeTransactionHash(tx);
+    const { payload32Bytes, hashHex, unsignedRlpHex } = crossChainRelayer.computeTransactionHash(tx);
     assert.strictEqual(payload32Bytes.length, 32);
     assert.match(hashHex, /^0x[0-9a-fA-F]{64}$/);
+    assert.ok(unsignedRlpHex.startsWith("0x"));
+
+    // Verify raw signed RLP assembly
+    const mockSig = {
+      big_r: { affine_point: "04" + "a".repeat(128) },
+      s: { scalar: "b".repeat(64) },
+      recovery_id: 0,
+    };
+    const rawTxHex = crossChainRelayer.assembleSignedRawTransaction(tx, mockSig);
+    assert.ok(rawTxHex.startsWith("0x"));
+  });
+
+  it("strictly enforces double-spend replay protection across deposit intents", async () => {
+    const intent1 = multichainListener.registerDepositIntent({
+      accountId,
+      targetChain: "base",
+      stakeNear: 0.1,
+      roundId: 2376,
+      ciphertext: "c1",
+      commit: "m1",
+    });
+
+    // Mark as deployed with tx_123
+    (multichainListener as any).processedTxHashes.add("tx_123");
+    intent1.status = "bet_deployed";
+
+    const intent2 = multichainListener.registerDepositIntent({
+      accountId,
+      targetChain: "base",
+      stakeNear: 0.1,
+      roundId: 2376,
+      ciphertext: "c2",
+      commit: "m2",
+    });
+
+    // Submitting tx_123 for intent2 must throw replay error
+    await assert.rejects(
+      async () => {
+        await multichainListener.verifyAndProcessTx(intent2.intentId, "tx_123", async () => "relayed");
+      },
+      /Double-spend prevented/
+    );
   });
 
   it("MCP engine exposes cross-chain deposit address tool for AI agents", async () => {
