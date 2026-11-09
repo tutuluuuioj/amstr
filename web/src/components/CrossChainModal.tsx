@@ -271,6 +271,24 @@ export const CrossChainModal: React.FC<CrossChainModalProps> = ({
               <p className="text-[10px] text-[#8C8478]">
                 Derived deterministically from <code className="text-[#EDE6DA]">{accountId}</code> via NEAR Root MPC key. Any funds sent here automatically route into your AMSTR game session.
               </p>
+              <div className="flex items-center justify-between text-[10px] pt-1 border-t border-[#2A2620]/60">
+                <span className="text-[#8C8478]">Need faucet funds?</span>
+                <a
+                  href={
+                    selectedChain === "solana"
+                      ? "https://faucet.solana.com/"
+                      : selectedChain === "base"
+                      ? "https://faucet.quicknode.com/base/sepolia"
+                      : "https://sepoliafaucet.com/"
+                  }
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-[#C8763A] hover:underline flex items-center"
+                >
+                  <span>Get {selectedChain === "solana" ? "Solana Devnet SOL" : `${selectedChain.toUpperCase()} Sepolia ETH`}</span>
+                  <ExternalLink className="w-3 h-3 ml-1" />
+                </a>
+              </div>
             </div>
 
             {/* Intent Status Tracker */}

@@ -22,6 +22,7 @@ export interface DepositIntent {
 export interface MultichainConfig {
   baseRpcUrl: string;
   ethRpcUrl: string;
+  solanaRpcUrl: string;
   requiredConfirmations: number;
 }
 
@@ -36,6 +37,7 @@ export class MultichainListener {
     this.config = {
       baseRpcUrl: config?.baseRpcUrl || process.env.BASE_RPC_URL || "https://sepolia.base.org",
       ethRpcUrl: config?.ethRpcUrl || process.env.ETH_RPC_URL || "https://rpc.sepolia.org",
+      solanaRpcUrl: config?.solanaRpcUrl || process.env.SOLANA_RPC_URL || "https://api.devnet.solana.com",
       requiredConfirmations: config?.requiredConfirmations ?? 2,
     };
   }
@@ -119,6 +121,11 @@ export class MultichainListener {
     intent.txHash = txHash;
     intent.status = "confirming";
     intent.updatedAt = Date.now();
+
+    // Dedicated handler for Solana Devnet
+    if (intent.targetChain === "solana") {
+      return this.verifySolanaTransaction(intent, txHash, deployBetCallback);
+    }
 
     try {
       // 1. Query full transaction to verify value transferred
@@ -250,6 +257,124 @@ export class MultichainListener {
       return parseInt(data.result || "0x0", 16);
     } catch {
       return 1000;
+    }
+  }
+
+  private async verifySolanaTransaction(
+    intent: DepositIntent,
+    signature: string,
+    deployBetCallback: (intent: DepositIntent) => Promise<string>
+  ): Promise<DepositIntent> {
+    try {
+      // 1. Query Solana getTransaction
+      const res = await fetch(this.config.solanaRpcUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 11,
+          method: "getTransaction",
+          params: [signature, { encoding: "jsonParsed", maxSupportedTransactionVersion: 0 }],
+        }),
+      });
+      const data = (await res.json()) as any;
+      const tx = data?.result;
+
+      if (!tx) {
+        intent.confirmations = 0;
+        return intent;
+      }
+
+      if (tx.meta && tx.meta.err) {
+        intent.status = "failed";
+        intent.error = "Solana transaction failed or reverted";
+        intent.updatedAt = Date.now();
+        return intent;
+      }
+
+      // Check recipient and lamports transferred (1 SOL = 1e9 Lamports)
+      const expectedLamports = BigInt(Math.floor(parseFloat(intent.expectedAmount) * 1e9));
+      let receivedLamports = 0n;
+
+      const accountKeys = tx.transaction?.message?.accountKeys || [];
+      const derivedIndex = accountKeys.findIndex(
+        (k: any) => (typeof k === "string" ? k : k.pubkey) === intent.derivedAddress
+      );
+
+      if (derivedIndex !== -1 && tx.meta?.postBalances && tx.meta?.preBalances) {
+        const delta = tx.meta.postBalances[derivedIndex] - tx.meta.preBalances[derivedIndex];
+        if (delta > 0) {
+          receivedLamports = BigInt(delta);
+        }
+      }
+
+      if (receivedLamports < expectedLamports) {
+        const instructions = tx.transaction?.message?.instructions || [];
+        for (const inst of instructions) {
+          if (
+            inst.parsed &&
+            inst.parsed.type === "transfer" &&
+            inst.parsed.info?.destination === intent.derivedAddress
+          ) {
+            receivedLamports += BigInt(inst.parsed.info.lamports || 0);
+          }
+        }
+      }
+
+      if (receivedLamports < expectedLamports) {
+        intent.status = "failed";
+        intent.error = `Insufficient deposit: received ${receivedLamports} Lamports, required at least ${expectedLamports} Lamports`;
+        intent.updatedAt = Date.now();
+        return intent;
+      }
+
+      // Check confirmations via getSignatureStatuses
+      let confs = 1;
+      try {
+        const statusRes = await fetch(this.config.solanaRpcUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: 12,
+            method: "getSignatureStatuses",
+            params: [[signature], { searchTransactionHistory: true }],
+          }),
+        });
+        const statusData = (await statusRes.json()) as any;
+        const status = statusData.result?.value?.[0];
+        if (status) {
+          if (status.confirmationStatus === "finalized") {
+            confs = 32;
+          } else if (typeof status.confirmations === "number") {
+            confs = status.confirmations;
+          } else if (status.confirmationStatus === "confirmed") {
+            confs = 2;
+          }
+        }
+      } catch {
+        confs = 1;
+      }
+
+      intent.confirmations = confs;
+
+      if (confs >= this.config.requiredConfirmations) {
+        console.log(
+          `[Multichain Listener] Solana Devnet deposit verified (${confs} confs, value: ${receivedLamports} Lamports). Placing NEAR bet for ${intent.accountId}...`
+        );
+        const nearTx = await deployBetCallback(intent);
+        intent.status = "bet_deployed";
+        intent.nearTxHash = nearTx;
+        this.processedTxHashes.add(signature);
+      }
+
+      intent.updatedAt = Date.now();
+      return intent;
+    } catch (err: any) {
+      console.warn(`[Multichain Listener] Solana verification error for ${signature}:`, err.message);
+      intent.error = err.message;
+      intent.updatedAt = Date.now();
+      return intent;
     }
   }
 }
