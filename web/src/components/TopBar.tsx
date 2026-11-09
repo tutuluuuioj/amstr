@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import { LogOut, Zap, Copy, Check } from "lucide-react";
 import { formatYoctoNear, formatYoctoAmstr } from "../services/near";
 import { sessionKeyService } from "../services/sessionKey";
+import { passkeyService } from "../services/passkey";
 
 export type NavTab = "play" | "rounds" | "proof" | "stake" | "agent" | "how-it-works";
 
@@ -56,6 +57,28 @@ export const TopBar: React.FC<TopBarProps> = ({
     navigator.clipboard.writeText(accountId);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  const [activating, setActivating] = useState<boolean>(false);
+
+  const handleActivateAccount = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const saved = passkeyService.getSavedPasskeyAccount();
+    if (!saved) return;
+    setActivating(true);
+    try {
+      const ok = await passkeyService.ensureOnChainAccount(saved);
+      if (ok) {
+        alert(`Account ${saved.accountId} activated on-chain with 10 free NEAR!`);
+        window.location.reload();
+      } else {
+        alert("Activation request submitted. Please refresh in a few seconds.");
+      }
+    } catch (err: any) {
+      alert("Activation notice: " + (err.message || "Failed to contact NEAR helper."));
+    } finally {
+      setActivating(false);
+    }
   };
 
   let teeDot = <span className="w-2 h-2 rounded-full bg-[#8C8478] animate-pulse"></span>;
@@ -161,10 +184,21 @@ export const TopBar: React.FC<TopBarProps> = ({
                     </span>
                   )}
                 </div>
-                <span className="font-mono text-[10px] text-[#8C8478] flex items-center space-x-1.5">
+                <span className="font-mono text-[10px] text-[#8C8478] flex items-center space-x-1.5 flex-wrap">
                   <span>{formatYoctoNear(nearBalance, 2)} NEAR</span>
                   <span>•</span>
                   <span>{formatYoctoAmstr(amstrBalance, 2)} AMSTR</span>
+                  {(nearBalance === "0" || nearBalance === "0.00" || !nearBalance) && passkeyService.getSavedPasskeyAccount() && (
+                    <button
+                      type="button"
+                      onClick={handleActivateAccount}
+                      disabled={activating}
+                      className="text-[9px] font-mono uppercase px-1.5 py-0.2 rounded-sm bg-[#C8763A] hover:bg-[#d88244] text-[#0E0D0B] font-bold transition-colors ml-1 shadow-sm"
+                      title="Activate on-chain & claim 10 free testnet NEAR"
+                    >
+                      {activating ? "Activating..." : "⚡ Activate (Free 10 NEAR)"}
+                    </button>
+                  )}
                 </span>
               </div>
               <button

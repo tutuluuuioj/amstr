@@ -33,6 +33,14 @@ class WalletService {
       this.devAccountId = savedDev;
     }
 
+    // Auto-verify & fund Passkey account on-chain via official NEAR helper
+    const passkeyAcc = passkeyService.getSavedPasskeyAccount();
+    if (passkeyAcc) {
+      passkeyService.ensureOnChainAccount(passkeyAcc).catch((e) => {
+        console.warn("[Passkey Init] Auto-provision notice:", e.message);
+      });
+    }
+
     if (this.selector) {
       return this.getState();
     }

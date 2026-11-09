@@ -116,7 +116,52 @@ class PasskeyService {
     };
 
     localStorage.setItem(PASSKEY_STORAGE_KEY, JSON.stringify(passkeyAccount));
+    await this.ensureOnChainAccount(passkeyAccount);
     return passkeyAccount;
+  }
+
+  /**
+   * Ensure the passkey account exists on NEAR Testnet blockchain.
+   * If it does not exist yet, calls official NEAR Testnet Helper to create and fund it with 10 free NEAR!
+   */
+  public async ensureOnChainAccount(account: PasskeyAccount): Promise<boolean> {
+    try {
+      // 1. Check if account already exists on-chain
+      const checkRes = await fetch("https://near-testnet.drpc.org", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: "check-acc",
+          method: "query",
+          params: {
+            request_type: "view_account",
+            finality: "final",
+            account_id: account.accountId,
+          },
+        }),
+      });
+      const checkData = await checkRes.json();
+      if (checkData.result?.amount) {
+        return true;
+      }
+
+      // 2. Account does not exist on-chain: auto-create and fund via official NEAR Helper
+      console.log(`[Passkey] Auto-creating on-chain account ${account.accountId}...`);
+      const helperRes = await fetch("https://helper.testnet.near.org/account", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          newAccountId: account.accountId,
+          newAccountPublicKey: account.publicKey,
+        }),
+      });
+
+      return helperRes.ok;
+    } catch (err: any) {
+      console.warn("ensureOnChainAccount notice:", err.message);
+      return false;
+    }
   }
 
   /**
@@ -155,6 +200,7 @@ class PasskeyService {
     }
 
     if (saved) {
+      this.ensureOnChainAccount(saved).catch(() => {});
       return saved;
     }
 
@@ -174,6 +220,7 @@ class PasskeyService {
     };
 
     localStorage.setItem(PASSKEY_STORAGE_KEY, JSON.stringify(passkeyAccount));
+    await this.ensureOnChainAccount(passkeyAccount);
     return passkeyAccount;
   }
 
