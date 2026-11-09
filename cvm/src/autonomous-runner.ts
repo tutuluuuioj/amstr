@@ -10,6 +10,9 @@ import { handleMcpHttp } from "./mcp/server.js";
 import { PlayerEntryStore } from "./mcp/engine.js";
 import { DCAP_ATTESTATION_REPORT } from "./dcap-report.js";
 import { GaslessRelayerService } from "./relayer.js";
+import { multichainListener } from "./multichain-listener.js";
+import { crossChainRelayer } from "./crosschain-relayer.js";
+import { getDerivedForeignAccounts } from "./chainsig.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.resolve(__dirname, "../../.env.testnet") });
@@ -145,6 +148,10 @@ class AutonomousRoundRunnerService {
 
   public getSettledSeedsCount(): number {
     return this.settledSeeds.size;
+  }
+
+  public getAccount(): any {
+    return this.nearAccount;
   }
 
   private loadPersistedSeeds() {
@@ -882,6 +889,104 @@ async function main() {
         } catch (err: any) {
           res.writeHead(500, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ error: err.message }));
+        }
+      });
+      return;
+    }
+
+    // Multichain Foreign Derived Addresses Endpoint
+    if (pathname.startsWith("/multichain/addresses/")) {
+      const targetAccount = decodeURIComponent(pathname.slice("/multichain/addresses/".length));
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ success: true, addresses: getDerivedForeignAccounts(targetAccount) }));
+      return;
+    }
+
+    // Multichain Deposit Intent Registration
+    if (pathname === "/multichain/deposit-intent" && req.method === "POST") {
+      let body = "";
+      req.on("data", (chunk) => { body += chunk; });
+      req.on("end", () => {
+        try {
+          const parsed = JSON.parse(body || "{}");
+          const intent = multichainListener.registerDepositIntent(parsed);
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ success: true, intent }));
+        } catch (err: any) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ success: false, error: err.message }));
+        }
+      });
+      return;
+    }
+
+    // Multichain Intent Status Query
+    if (pathname.startsWith("/multichain/intent/")) {
+      const intentId = pathname.slice("/multichain/intent/".length);
+      const intent = multichainListener.getIntent(intentId);
+      if (intent) {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ success: true, intent }));
+      } else {
+        res.writeHead(404, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ success: false, error: `Intent ${intentId} not found` }));
+      }
+      return;
+    }
+
+    // Multichain Verify External Transaction & Deploy
+    if (pathname === "/multichain/verify-tx" && req.method === "POST") {
+      let body = "";
+      req.on("data", (chunk) => { body += chunk; });
+      req.on("end", async () => {
+        try {
+          const { intentId, txHash } = JSON.parse(body || "{}");
+          const updated = await multichainListener.verifyAndProcessTx(intentId, txHash, async (intent) => {
+            const stakeYocto = utils.format.parseNearAmount(intent.stakeNear.toString()) || "100000000000000000000000";
+            const storageYocto = "10000000000000000000000"; // 0.01 NEAR
+            const totalDeposit = (BigInt(stakeYocto) + BigInt(storageYocto)).toString();
+            const deployRes = await relayerService.relayFunctionCall({
+              senderAccountId: intent.accountId,
+              contractId: CONTRACT_ID,
+              methodName: "deploy",
+              args: {
+                round_id: intent.roundId,
+                ciphertext: intent.ciphertext,
+                commit: intent.commit,
+              },
+              attachedDepositYocto: totalDeposit,
+              gasTGas: 150,
+            });
+            return deployRes.txHash || "relayed_ok";
+          });
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ success: true, intent: updated }));
+        } catch (err: any) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ success: false, error: err.message }));
+        }
+      });
+      return;
+    }
+
+    // Multichain Outbound Payout via NEAR Chain Signatures
+    if (pathname === "/multichain/payout" && req.method === "POST") {
+      let body = "";
+      req.on("data", (chunk) => { body += chunk; });
+      req.on("end", async () => {
+        try {
+          const { recipientAddress, amountEth, chain } = JSON.parse(body || "{}");
+          const payout = await crossChainRelayer.executeCrossChainPayout(
+            runner.getAccount(),
+            recipientAddress,
+            amountEth || "0.005",
+            `${chain || "base"}-1`
+          );
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ success: true, payout }));
+        } catch (err: any) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ success: false, error: err.message }));
         }
       });
       return;

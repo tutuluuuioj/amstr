@@ -128,6 +128,67 @@ export const MCP_TOOLS: McpToolDefinition[] = [
       properties: {},
     },
   },
+  {
+    name: "amstr_get_crosschain_deposit_address",
+    description:
+      "Get the agent's deterministic derived deposit address on Base, Ethereum, Arbitrum, or Solana via NEAR Chain Signatures. Allows autonomous agents with EVM or Solana treasuries to fund rounds without holding NEAR.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        account_id: {
+          type: "string",
+          description: "Optional NEAR account ID (defaults to the agent's account)",
+        },
+        chain: {
+          type: "string",
+          enum: ["base", "ethereum", "arbitrum", "solana"],
+          description: "Target external blockchain for funding (default: 'base')",
+        },
+      },
+    },
+  },
+  {
+    name: "amstr_check_crosschain_deposit",
+    description:
+      "Check the status and block confirmations of an external cross-chain deposit intent and verify its execution on the AMSTR NEAR game contract.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        intent_id: {
+          type: "string",
+          description: "Unique deposit intent ID",
+        },
+        tx_hash: {
+          type: "string",
+          description: "External chain transaction hash (0x...)",
+        },
+      },
+    },
+  },
+  {
+    name: "amstr_claim_crosschain",
+    description:
+      "Claim and sweep AMSTR game winnings directly to an external EVM/Base address using NEAR Chain Signatures (MPC threshold signing).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        recipient_address: {
+          type: "string",
+          description: "External EVM recipient address (0x...)",
+        },
+        amount_eth: {
+          type: "string",
+          description: "Amount to transfer in ETH units (e.g. '0.005')",
+        },
+        chain: {
+          type: "string",
+          enum: ["base", "ethereum"],
+          description: "Target foreign chain for payout (default: 'base')",
+        },
+      },
+      required: ["recipient_address"],
+    },
+  },
 ];
 
 // Active SSE sessions: sessionId -> response stream
@@ -212,6 +273,20 @@ export async function executeMcpMethod(
 
         case "amstr_get_jackpot_status":
           result = await mcpEngine.getJackpotStatus();
+          break;
+
+        case "amstr_get_crosschain_deposit_address":
+          result = await mcpEngine.getCrossChainDepositAddress(token, args.account_id, args.chain);
+          break;
+
+        case "amstr_check_crosschain_deposit":
+          result = await mcpEngine.checkCrossChainDeposit(args.intent_id, args.tx_hash);
+          break;
+
+        case "amstr_claim_crosschain":
+          if (!token) throw new Error("Authentication required: provide an AMSTR MCP token to claim cross-chain payouts.");
+          if (!args.recipient_address) throw new Error("Missing required argument: recipient_address");
+          result = await mcpEngine.claimCrossChainPayout(token, args.recipient_address, args.amount_eth, args.chain);
           break;
 
         default:

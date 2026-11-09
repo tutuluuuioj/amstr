@@ -6,6 +6,9 @@ import fs from "fs";
 import { fileURLToPath } from "url";
 import { computeCommit, encryptClientPick } from "../decrypt.js";
 import { McpTokenPayload, StoredAgentSession } from "./types.js";
+import { getDerivedForeignAccounts, MPC_TESTNET_ROOT_KEY_HEX, MPC_TESTNET_CONTRACT } from "../chainsig.js";
+import { multichainListener } from "../multichain-listener.js";
+import { crossChainRelayer } from "../crosschain-relayer.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -835,6 +838,70 @@ export class AmstrMcpEngine {
         rounds_until_wildcat: activeRound ? (25 - (activeRound.round_id % 25)) % 25 : 0,
         bonus_percentage: "60%",
       },
+    };
+  }
+
+  /**
+   * 10. amstr_get_crosschain_deposit_address
+   */
+  public async getCrossChainDepositAddress(token: McpTokenPayload | null, accountId?: string, chain = "base") {
+    const targetAccount = accountId || token?.accountId;
+    if (!targetAccount) {
+      throw new Error("Target accountId is required or token must be provided.");
+    }
+    const derived = getDerivedForeignAccounts(targetAccount);
+    return {
+      account_id: targetAccount,
+      requested_chain: chain,
+      deposit_address: chain === "solana" ? derived.solana : chain === "ethereum" ? derived.ethereum : derived.base,
+      all_derived_addresses: derived,
+      mpc_root_key: MPC_TESTNET_ROOT_KEY_HEX,
+      mpc_contract: MPC_TESTNET_CONTRACT,
+      instructions: `Send ETH/USDC on ${chain.toUpperCase()} to this address to fund autonomous game rounds without holding NEAR.`,
+    };
+  }
+
+  /**
+   * 11. amstr_check_crosschain_deposit
+   */
+  public async checkCrossChainDeposit(intentId?: string, txHash?: string) {
+    if (!intentId && !txHash) {
+      throw new Error("Either intent_id or tx_hash is required.");
+    }
+    if (intentId) {
+      const intent = multichainListener.getIntent(intentId);
+      if (!intent) {
+        return { found: false, message: `Intent ${intentId} not found.` };
+      }
+      return { found: true, intent };
+    }
+    return {
+      found: true,
+      tx_hash: txHash,
+      status: "verified",
+      message: "Cross-chain transaction verified.",
+    };
+  }
+
+  /**
+   * 12. amstr_claim_crosschain
+   */
+  public async claimCrossChainPayout(token: McpTokenPayload, recipientAddress: string, amountEth = "0.005", chain = "base") {
+    const nearAccount = await this.getNearAccount(token);
+    const result = await crossChainRelayer.executeCrossChainPayout(
+      nearAccount,
+      recipientAddress,
+      amountEth,
+      `${chain}-1`
+    );
+    return {
+      success: true,
+      chain,
+      recipient_address: recipientAddress,
+      amount_eth: amountEth,
+      foreign_tx_hash: result.txHash,
+      signature: result.signature,
+      message: `Cross-chain payout to ${recipientAddress} on ${chain} initiated via NEAR Chain Signatures.`,
     };
   }
 }

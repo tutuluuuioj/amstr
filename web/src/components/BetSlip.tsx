@@ -6,6 +6,7 @@ import { getPickSalt } from "../crypto/cvm";
 import { CONFIG } from "../config";
 import { sessionKeyService } from "../services/sessionKey";
 import { walletService } from "../services/wallet";
+import { CrossChainModal } from "./CrossChainModal";
 
 interface BetSlipProps {
   accountId: string | null;
@@ -43,6 +44,7 @@ export const BetSlip: React.FC<BetSlipProps> = ({
   const [stakeAmount, setStakeAmount] = useState<string>("0.1");
   const [referralCode, setReferralCode] = useState<string>("");
   const [isActionLoading, setIsActionLoading] = useState<boolean>(false);
+  const [showCrossChainModal, setShowCrossChainModal] = useState<boolean>(false);
   const [isSessionActive, setIsSessionActive] = useState<boolean>(() =>
     accountId ? sessionKeyService.getSessionState(accountId).isActive : false
   );
@@ -507,6 +509,18 @@ export const BetSlip: React.FC<BetSlipProps> = ({
         </button>
       )}
 
+      {/* Track 1: Pay with Base / Solana Button */}
+      {isConnected && !isViewingPastRound && isRoundOpen && (
+        <button
+          type="button"
+          onClick={() => setShowCrossChainModal(true)}
+          className="w-full py-2.5 rounded-sm border border-[#2A2620] hover:border-[#22C55E]/60 bg-[#0E0D0B] text-[#EDE6DA] hover:text-[#22C55E] text-xs font-mono transition-colors flex items-center justify-center space-x-1.5 shadow-sm"
+        >
+          <span className="text-[#22C55E]">⚡</span>
+          <span>Pay from Base / EVM / Solana</span>
+        </button>
+      )}
+
       {/* Under it: lock line or historical note */}
       <div className="flex items-center justify-center space-x-1.5 text-[11px] text-[#8C8478] pt-1">
         <Lock className="w-3 h-3 text-[#8C8478] flex-shrink-0" />
@@ -516,6 +530,15 @@ export const BetSlip: React.FC<BetSlipProps> = ({
             : "Picks are encrypted in your browser. Only the TEE can decrypt them."}
         </span>
       </div>
+
+      <CrossChainModal
+        isOpen={showCrossChainModal}
+        onClose={() => setShowCrossChainModal(false)}
+        accountId={accountId}
+        roundId={round?.round_id}
+        selectedTiles={Array.from(selectedTiles)}
+        stakeNear={stakeVal}
+      />
     </div>
   );
 };
