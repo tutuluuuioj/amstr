@@ -6,6 +6,8 @@ import { setupMyNearWallet } from "@near-wallet-selector/my-near-wallet";
 import { connect, keyStores, KeyPair } from "near-api-js";
 import { CONFIG } from "../config";
 import { parseNearToYocto, parseAmstrToYocto, nearRpc } from "./near";
+import { sessionKeyService, SessionKeyState } from "./sessionKey";
+import { passkeyService } from "./passkey";
 
 const DEV_KEY = (typeof import.meta !== "undefined" && (import.meta as any).env?.VITE_DEV_PRIVATE_KEY) || "";
 
@@ -14,6 +16,8 @@ export interface WalletContextState {
   modal: WalletSelectorModal | null;
   accounts: AccountState[];
   accountId: string | null;
+  isSessionActive?: boolean;
+  sessionState?: SessionKeyState;
 }
 
 class WalletService {
@@ -74,11 +78,14 @@ class WalletService {
       this.accounts.find((a) => a.active)?.accountId ||
       this.accounts[0]?.accountId ||
       null;
+    const sessionState = sessionKeyService.getSessionState(accountId);
     return {
       selector: this.selector,
       modal: this.modal,
       accounts: this.accounts,
       accountId,
+      isSessionActive: sessionState.isActive,
+      sessionState,
     };
   }
 
@@ -200,6 +207,27 @@ class WalletService {
     const stakeYocto = BigInt(parseNearToYocto(stakeNear));
     const storageYocto = 10_000_000_000_000_000_000_000n; // 0.01 NEAR
     const totalDeposit = stakeYocto + storageYocto;
+    const activeAccount = this.getState().accountId;
+
+    // 1-Click Session Key: Instant background signing with ZERO wallet popups
+    if (activeAccount && sessionKeyService.getSessionState(activeAccount).isActive) {
+      try {
+        console.log(`[1-Click Session] Signing deploy with session key for ${activeAccount}`);
+        return await sessionKeyService.executeWithSessionKey(
+          activeAccount,
+          "deploy",
+          {
+            round_id: roundId,
+            ciphertext: ciphertextBase64,
+            commit: commitBase64,
+          },
+          150000000000000n,
+          totalDeposit
+        );
+      } catch (err: any) {
+        console.warn("[1-Click Session] Deploy fallback to connected wallet:", err.message);
+      }
+    }
 
     if (this.devAccountId) {
       const account = await this.getNearAccount(this.devAccountId);
@@ -255,6 +283,24 @@ class WalletService {
    * Requirement 5: One-click claim for winners
    */
   public async claim(roundIds: number[]): Promise<any> {
+    const activeAccount = this.getState().accountId;
+
+    // 1-Click Session Key: Instant background signing with ZERO wallet popups
+    if (activeAccount && sessionKeyService.getSessionState(activeAccount).isActive) {
+      try {
+        console.log(`[1-Click Session] Signing claim with session key for ${activeAccount}`);
+        return await sessionKeyService.executeWithSessionKey(
+          activeAccount,
+          "claim",
+          { round_ids: roundIds },
+          250000000000000n,
+          0n
+        );
+      } catch (err: any) {
+        console.warn("[1-Click Session] Claim fallback to connected wallet:", err.message);
+      }
+    }
+
     if (this.devAccountId) {
       const account = await this.getNearAccount(this.devAccountId);
       return await account.functionCall({
@@ -269,7 +315,6 @@ class WalletService {
     const wallet = await this.selector.wallet();
 
     // Ensure recipient is registered on the AMSTR fungible token contract so FT transfers succeed
-    const activeAccount = this.getState().accountId;
     if (activeAccount) {
       try {
         const storageBal = await nearRpc.callViewFunction<any>(
@@ -547,6 +592,127 @@ class WalletService {
         },
       ],
     });
+  }
+
+  /**
+   * Chain Abstraction: Enable 1-Click Session Keys (No wallet popups for bets/claims)
+   */
+  public async enableSessionKey(durationHours = 24, allowanceNear = "5"): Promise<string> {
+    const accountId = this.getState().accountId;
+    if (!accountId) throw new Error("Please connect a wallet first to authorize 1-Click Fast Play.");
+
+    const { publicKey } = await sessionKeyService.createSessionKeyPair(
+      accountId,
+      durationHours,
+      allowanceNear
+    );
+
+    if (this.devAccountId) {
+      try {
+        const account = await this.getNearAccount(this.devAccountId);
+        await account.addKey(
+          publicKey,
+          CONFIG.CONTRACT_ID,
+          ["deploy", "claim"],
+          BigInt(parseNearToYocto(allowanceNear))
+        );
+      } catch (err: any) {
+        console.warn("Dev account addKey notice:", err.message);
+      }
+      this.notify();
+      return publicKey;
+    }
+
+    if (!this.selector) throw new Error("Wallet not connected");
+    const wallet = await this.selector.wallet();
+
+    await this.executeTransaction(wallet, {
+      receiverId: accountId,
+      actions: [
+        {
+          type: "AddKey",
+          params: {
+            publicKey,
+            accessKey: {
+              allowance: parseNearToYocto(allowanceNear),
+              receiverId: CONFIG.CONTRACT_ID,
+              methodNames: ["deploy", "claim"],
+            },
+          },
+        },
+      ],
+    });
+
+    this.notify();
+    return publicKey;
+  }
+
+  /**
+   * Chain Abstraction: Disable and clear local session key
+   */
+  public async disableSessionKey(): Promise<void> {
+    const accountId = this.getState().accountId;
+    if (accountId) {
+      await sessionKeyService.clearSession(accountId);
+      this.notify();
+    }
+  }
+
+  /**
+   * Chain Abstraction: Connect using WebAuthn / Biometric Passkey (Touch ID / Face ID)
+   */
+  public async connectWithPasskey(username?: string): Promise<string> {
+    const passkeyAcc = await passkeyService.createPasskeyAccount(username);
+    this.devAccountId = passkeyAcc.accountId;
+    localStorage.setItem("amstr_dev_account", passkeyAcc.accountId);
+    await sessionKeyService.createSessionKeyPair(passkeyAcc.accountId, 48, "10");
+    this.notify();
+    return passkeyAcc.accountId;
+  }
+
+  /**
+   * Chain Abstraction: Authenticate with existing Biometric Passkey
+   */
+  public async loginWithPasskey(): Promise<string> {
+    const passkeyAcc = await passkeyService.loginWithPasskey();
+    this.devAccountId = passkeyAcc.accountId;
+    localStorage.setItem("amstr_dev_account", passkeyAcc.accountId);
+    await sessionKeyService.createSessionKeyPair(passkeyAcc.accountId, 48, "10");
+    this.notify();
+    return passkeyAcc.accountId;
+  }
+
+  /**
+   * Chain Abstraction: Relay transaction through Keeper Gasless Relayer
+   */
+  public async relayCallViaKeeper(
+    contractId: string,
+    methodName: string,
+    args: Record<string, any>,
+    depositYocto = "0"
+  ): Promise<any> {
+    const accountId = this.getState().accountId;
+    if (!accountId) throw new Error("Account not connected");
+
+    const keeperUrl = CONFIG.KEEPER_URL || "https://amstr-keeper.fly.dev";
+    const res = await fetch(`${keeperUrl}/relayer/submit`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        account_id: accountId,
+        contract_id: contractId,
+        method_name: methodName,
+        args,
+        deposit: depositYocto,
+        gas_tgas: 150,
+      }),
+    });
+
+    const data = await res.json();
+    if (!res.ok || !data.success) {
+      throw new Error(data.error || "Gasless relayer execution failed.");
+    }
+    return data;
   }
 }
 

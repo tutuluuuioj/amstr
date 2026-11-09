@@ -165,6 +165,19 @@ class NearRpcClient {
     }
   }
 
+  public async getAccessKeys(accountId: string): Promise<any[]> {
+    try {
+      const result = await this.postRpc("query", {
+        request_type: "view_access_key_list",
+        finality: "optimistic",
+        account_id: accountId,
+      });
+      return result?.keys || [];
+    } catch {
+      return [];
+    }
+  }
+
   public async getAmstrTokenBalance(accountId: string): Promise<string> {
     try {
       const bal = await this.callViewFunction<string>(CONFIG.TOKEN_CONTRACT_ID, "ft_balance_of", {

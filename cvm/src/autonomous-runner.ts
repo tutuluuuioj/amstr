@@ -9,6 +9,7 @@ import { fileURLToPath } from "url";
 import { handleMcpHttp } from "./mcp/server.js";
 import { PlayerEntryStore } from "./mcp/engine.js";
 import { DCAP_ATTESTATION_REPORT } from "./dcap-report.js";
+import { GaslessRelayerService } from "./relayer.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.resolve(__dirname, "../../.env.testnet") });
@@ -29,6 +30,19 @@ const RPC_ENDPOINTS = [
   "https://near-testnet.drpc.org",
   "https://rpc.testnet.fastnear.com",
 ];
+
+const relayerService = new GaslessRelayerService({
+  networkId: "testnet",
+  nodeUrl: RPC_ENDPOINTS[0],
+  relayerAccountId: ADMIN_ID,
+  relayerPrivateKey: ADMIN_PRIV_KEY,
+  whitelistedContracts: [
+    CONTRACT_ID,
+    process.env.TOKEN_CONTRACT_ID || "token.amstr-admin-zxlhcx.testnet",
+  ],
+  maxCallsPerHourPerAccount: 30,
+});
+relayerService.init().catch((err) => console.warn("[Relayer Init Warning]:", err.message));
 
 async function retry<T>(fn: () => Promise<T>, attempts = 6, delayMs = 3000): Promise<T> {
   for (let i = 1; i <= attempts; i++) {
@@ -822,6 +836,54 @@ async function main() {
         res.writeHead(404, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: `Seed not found for round ${rId}` }));
       }
+      return;
+    }
+
+    // NEP-366 Gasless Relayer Status Endpoint
+    if (pathname === "/relayer/status") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(relayerService.getStatus()));
+      return;
+    }
+
+    // NEP-366 Gasless Relayer Submission Endpoint
+    if (pathname === "/relayer/submit" && req.method === "POST") {
+      let body = "";
+      req.on("data", (chunk) => { body += chunk; });
+      req.on("end", async () => {
+        try {
+          const parsed = JSON.parse(body || "{}");
+          if (parsed.signed_delegate) {
+            const bytes = Buffer.from(parsed.signed_delegate, "base64");
+            const result = await relayerService.relaySignedDelegate(bytes);
+            res.writeHead(result.success ? 200 : 400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify(result));
+            return;
+          }
+
+          const { account_id, contract_id, method_name, args, deposit, gas_tgas } = parsed;
+          if (!account_id || !contract_id || !method_name) {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Missing required fields: account_id, contract_id, method_name" }));
+            return;
+          }
+
+          const result = await relayerService.relayFunctionCall({
+            senderAccountId: account_id,
+            contractId: contract_id,
+            methodName: method_name,
+            args: args || {},
+            attachedDepositYocto: deposit || "0",
+            gasTGas: gas_tgas || 100,
+          });
+
+          res.writeHead(result.success ? 200 : 400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify(result));
+        } catch (err: any) {
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: err.message }));
+        }
+      });
       return;
     }
 

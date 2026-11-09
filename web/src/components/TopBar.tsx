@@ -1,6 +1,7 @@
-import React from "react";
-import { LogOut } from "lucide-react";
+import React, { useState, useEffect } from "react";
+import { LogOut, Zap } from "lucide-react";
 import { formatYoctoNear, formatYoctoAmstr } from "../services/near";
+import { sessionKeyService } from "../services/sessionKey";
 
 export type NavTab = "play" | "rounds" | "proof" | "stake" | "agent" | "how-it-works";
 
@@ -37,6 +38,16 @@ export const TopBar: React.FC<TopBarProps> = ({
   ];
 
   // TEE Status dot and badge logic (Requirement 2)
+  const [isSessionActive, setIsSessionActive] = useState<boolean>(() =>
+    accountId ? sessionKeyService.getSessionState(accountId).isActive : false
+  );
+
+  useEffect(() => {
+    return sessionKeyService.subscribe(accountId, (state) => {
+      setIsSessionActive(state.isActive);
+    });
+  }, [accountId]);
+
   let teeDot = <span className="w-2 h-2 rounded-full bg-[#8C8478] animate-pulse"></span>;
   let teeText = "TEE connecting";
   let teeButtonClass = "border-[#2A2620] bg-[#1A1815] text-[#8C8478]";
@@ -101,6 +112,14 @@ export const TopBar: React.FC<TopBarProps> = ({
             {teeDot}
             <span className="text-[11px] font-medium">{teeText}</span>
           </button>
+
+          {/* 1-Click Fast Play Badge */}
+          {accountId && isSessionActive && (
+            <div className="hidden lg:flex items-center space-x-1 px-2 py-0.5 rounded-sm border border-[#22C55E]/40 bg-[#22C55E]/10 text-[11px] text-[#22C55E] font-mono">
+              <Zap className="w-3 h-3 fill-current" />
+              <span>1-Click Active</span>
+            </div>
+          )}
 
           {/* Connect Wallet / Connected Info */}
           {accountId ? (

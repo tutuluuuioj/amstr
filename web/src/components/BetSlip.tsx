@@ -1,9 +1,11 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { RoundView, EntryView, formatYoctoNear } from "../services/near";
-import { Lock, Loader2, ExternalLink } from "lucide-react";
+import { Lock, Loader2, ExternalLink, Zap, CheckCircle2 } from "lucide-react";
 import util from "tweetnacl-util";
 import { getPickSalt } from "../crypto/cvm";
 import { CONFIG } from "../config";
+import { sessionKeyService } from "../services/sessionKey";
+import { walletService } from "../services/wallet";
 
 interface BetSlipProps {
   accountId: string | null;
@@ -41,6 +43,32 @@ export const BetSlip: React.FC<BetSlipProps> = ({
   const [stakeAmount, setStakeAmount] = useState<string>("0.1");
   const [referralCode, setReferralCode] = useState<string>("");
   const [isActionLoading, setIsActionLoading] = useState<boolean>(false);
+  const [isSessionActive, setIsSessionActive] = useState<boolean>(() =>
+    accountId ? sessionKeyService.getSessionState(accountId).isActive : false
+  );
+  const [enablingSession, setEnablingSession] = useState<boolean>(false);
+
+  useEffect(() => {
+    return sessionKeyService.subscribe(accountId, (state) => {
+      setIsSessionActive(state.isActive);
+    });
+  }, [accountId]);
+
+  const handleToggleSessionKey = async () => {
+    if (!accountId) return;
+    setEnablingSession(true);
+    try {
+      if (isSessionActive) {
+        await walletService.disableSessionKey();
+      } else {
+        await walletService.enableSessionKey(24, "5");
+      }
+    } catch (err: any) {
+      console.warn("Session key toggle warning:", err.message);
+    } finally {
+      setEnablingSession(false);
+    }
+  };
 
   const STAKE_PRESETS = ["0.1", "0.5", "1"];
 
@@ -361,22 +389,49 @@ export const BetSlip: React.FC<BetSlipProps> = ({
         isViewingPastRound || !isRoundOpen ? "opacity-25" : ""
       }`}>
         <div className="flex justify-between text-[#8C8478]">
-          <span>Stake:</span>
+          <span>Stake Amount:</span>
           <span>{stakeVal.toFixed(3)} NEAR</span>
         </div>
         <div className="flex justify-between text-[#8C8478]">
-          <span>Protocol Fee (10%):</span>
-          <span>{fee10Pct} NEAR</span>
+          <span>Net Pot Allocation (90%):</span>
+          <span>{(stakeVal * 0.9).toFixed(3)} NEAR</span>
         </div>
-        <div className="flex justify-between text-[#8C8478]">
-          <span>Storage Deposit (Refundable):</span>
-          <span>0.010 NEAR</span>
+        <div className="flex justify-between text-[#8C8478] text-[11px]">
+          <span>Gas & State Storage:</span>
+          <span className="text-[#22C55E]">Sponsored / Refunded</span>
         </div>
         <div className="flex justify-between text-[#EDE6DA] font-semibold pt-1 border-t border-[#2A2620]">
-          <span>Total Required:</span>
-          <span>{totalNear} NEAR</span>
+          <span>Total Stake:</span>
+          <span>{stakeVal.toFixed(3)} NEAR</span>
+        </div>
+        <div className="text-[10px] text-[#8C8478]/80 text-right">
+          *Includes 0.01 NEAR entry storage automatically returned on draw
         </div>
       </div>
+
+      {/* 1-Click Fast Play Session Banner */}
+      {isConnected && !isViewingPastRound && (
+        <div className="flex items-center justify-between p-2 rounded-sm bg-[#0E0D0B] border border-[#2A2620] text-xs">
+          <div className="flex items-center space-x-1.5">
+            <Zap className={`w-3.5 h-3.5 ${isSessionActive ? "text-[#22C55E]" : "text-[#8C8478]"}`} />
+            <span className="text-[#EDE6DA] text-[11px] font-mono">
+              {isSessionActive ? "1-Click Fast Play: Active" : "1-Click Fast Play: Off"}
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={handleToggleSessionKey}
+            disabled={enablingSession}
+            className={`text-[10px] font-mono uppercase px-2 py-0.5 rounded-sm transition-colors border ${
+              isSessionActive
+                ? "border-[#2A2620] text-[#8C8478] hover:text-[#EDE6DA]"
+                : "border-[#22C55E]/60 text-[#22C55E] bg-[#22C55E]/10 hover:bg-[#22C55E]/20"
+            }`}
+          >
+            {enablingSession ? "Updating..." : isSessionActive ? "Disable" : "⚡ Enable"}
+          </button>
+        </div>
+      )}
 
       {/* Big copper button: "Back to Live Round" if past round, otherwise "Encrypt & Deploy" or phase status */}
       {isViewingPastRound ? (
@@ -409,6 +464,11 @@ export const BetSlip: React.FC<BetSlipProps> = ({
             )
           ) : !isConnected ? (
             <span>Connect Wallet to Deploy</span>
+          ) : isSessionActive ? (
+            <span className="flex items-center space-x-1.5">
+              <Zap className="w-3.5 h-3.5 text-[#0E0D0B] fill-current" />
+              <span>⚡ Deploy Bet (Instant • No Popups)</span>
+            </span>
           ) : (
             <span>Encrypt & Deploy</span>
           )}

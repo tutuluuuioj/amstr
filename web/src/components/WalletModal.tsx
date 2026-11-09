@@ -1,5 +1,5 @@
-import React from "react";
-import { X, Wallet, UserCheck, ExternalLink, Sparkles } from "lucide-react";
+import React, { useState } from "react";
+import { X, Wallet, UserCheck, ExternalLink, Sparkles, Fingerprint, Zap, Loader2 } from "lucide-react";
 import { walletService } from "../services/wallet";
 import { CONFIG } from "../config";
 
@@ -9,6 +9,9 @@ interface WalletModalProps {
 }
 
 export const WalletModal: React.FC<WalletModalProps> = ({ isOpen, onClose }) => {
+  const [loadingPasskey, setLoadingPasskey] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
   if (!isOpen) return null;
 
   const handleSelectDev = (accountId: string) => {
@@ -24,6 +27,33 @@ export const WalletModal: React.FC<WalletModalProps> = ({ isOpen, onClose }) => 
   const handleOpenWalletSelector = () => {
     onClose();
     walletService.showModal();
+  };
+
+  const handlePasskeyAuth = async () => {
+    setLoadingPasskey(true);
+    setErrorMsg(null);
+    try {
+      try {
+        await walletService.loginWithPasskey();
+      } catch (loginErr: any) {
+        // If login failed or no existing passkey, create a fresh passkey account
+        await walletService.connectWithPasskey();
+      }
+      onClose();
+    } catch (err: any) {
+      setErrorMsg(err.message || "Passkey biometric authentication failed.");
+    } finally {
+      setLoadingPasskey(false);
+    }
+  };
+
+  const handleInstantGuest = async () => {
+    const guestId = `guest_${Math.random().toString(36).substring(2, 7)}.testnet`;
+    walletService.connectDevAccount(guestId);
+    try {
+      await walletService.enableSessionKey(24, "5");
+    } catch {}
+    onClose();
   };
 
   return (
@@ -47,8 +77,59 @@ export const WalletModal: React.FC<WalletModalProps> = ({ isOpen, onClose }) => 
           </button>
         </div>
 
+        {errorMsg && (
+          <div className="p-2.5 rounded-sm bg-red-950/40 border border-red-800/60 text-red-200 text-xs">
+            {errorMsg}
+          </div>
+        )}
+
         {/* Options */}
         <div className="space-y-2.5">
+          {/* Option 0: Passkey / Biometrics (No NEAR Know-How / Chain Abstraction) */}
+          <button
+            onClick={handlePasskeyAuth}
+            disabled={loadingPasskey}
+            className="w-full flex items-center justify-between p-3 rounded-sm bg-[#0E0D0B] border border-[#22C55E]/60 hover:border-[#22C55E] bg-[#22C55E]/5 transition-colors text-left group"
+          >
+            <div className="flex items-center space-x-3">
+              <div className="w-8 h-8 rounded-sm bg-[#22C55E]/20 border border-[#22C55E]/50 flex items-center justify-center text-[#22C55E]">
+                {loadingPasskey ? <Loader2 className="w-4 h-4 animate-spin" /> : <Fingerprint className="w-4 h-4" />}
+              </div>
+              <div>
+                <div className="text-xs font-mono font-bold text-[#EDE6DA] group-hover:text-[#22C55E] transition-colors flex items-center space-x-1.5">
+                  <span>Face ID / Touch ID</span>
+                  <span className="text-[10px] uppercase font-sans tracking-wider px-1.5 py-0.2 rounded-sm bg-[#22C55E]/20 text-[#22C55E] font-bold">
+                    Zero Seed Phrase
+                  </span>
+                </div>
+                <div className="text-[11px] text-[#8C8478]">WebAuthn Passkey • 1-Click Biometric Login</div>
+              </div>
+            </div>
+            <span className="text-[11px] font-mono text-[#22C55E] font-medium">Play →</span>
+          </button>
+
+          {/* Option 0.5: Instant 1-Click Guest Play */}
+          <button
+            onClick={handleInstantGuest}
+            className="w-full flex items-center justify-between p-3 rounded-sm bg-[#0E0D0B] border border-[#C8763A]/40 hover:border-[#C8763A] bg-[#C8763A]/5 transition-colors text-left group"
+          >
+            <div className="flex items-center space-x-3">
+              <div className="w-8 h-8 rounded-sm bg-[#C8763A]/20 border border-[#C8763A]/50 flex items-center justify-center text-[#C8763A]">
+                <Zap className="w-4 h-4" />
+              </div>
+              <div>
+                <div className="text-xs font-mono font-bold text-[#EDE6DA] group-hover:text-[#C8763A] transition-colors flex items-center space-x-1.5">
+                  <span>1-Click Instant Guest</span>
+                  <span className="text-[10px] uppercase font-sans tracking-wider px-1.5 py-0.2 rounded-sm bg-[#C8763A]/20 text-[#C8763A]">
+                    Instant Start
+                  </span>
+                </div>
+                <div className="text-[11px] text-[#8C8478]">Auto-provisioned session • Zero setup</div>
+              </div>
+            </div>
+            <span className="text-[11px] font-mono text-[#C8763A] font-medium">Start →</span>
+          </button>
+
           {/* Option 1: Meteor Wallet (Primary Modern Wallet) */}
           <button
             onClick={handleSelectMeteorWallet}
