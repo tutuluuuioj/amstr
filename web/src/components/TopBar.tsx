@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from "react";
-import { LogOut, Zap, Copy, Check } from "lucide-react";
+import { LogOut, Zap, Copy, Check, ShieldCheck, X } from "lucide-react";
 import { formatYoctoNear, formatYoctoAmstr } from "../services/near";
 import { sessionKeyService } from "../services/sessionKey";
 import { passkeyService } from "../services/passkey";
+import { walletService } from "../services/wallet";
 
 export type NavTab = "play" | "rounds" | "proof" | "stake" | "agent" | "how-it-works";
 
@@ -50,6 +51,7 @@ export const TopBar: React.FC<TopBarProps> = ({
   }, [accountId]);
 
   const [copied, setCopied] = useState<boolean>(false);
+  const [showSessionModal, setShowSessionModal] = useState<boolean>(false);
 
   const handleCopyAccountId = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -146,12 +148,22 @@ export const TopBar: React.FC<TopBarProps> = ({
             <span className="text-[11px] font-medium">{teeText}</span>
           </button>
 
-          {/* 1-Click Fast Play Badge */}
-          {accountId && isSessionActive && (
-            <div className="hidden lg:flex items-center space-x-1 px-2 py-0.5 rounded-sm border border-[#22C55E]/40 bg-[#22C55E]/10 text-[11px] text-[#22C55E] font-mono">
-              <Zap className="w-3 h-3 fill-current" />
-              <span>1-Click Active</span>
-            </div>
+          {/* 1-Click Fast Play Interactive Badge */}
+          {accountId && (
+            <button
+              type="button"
+              onClick={() => setShowSessionModal(true)}
+              className={`flex items-center space-x-1.5 px-2.5 py-1 rounded-sm border transition-colors text-xs font-mono group cursor-pointer ${
+                isSessionActive
+                  ? "border-[#22C55E]/50 bg-[#22C55E]/10 text-[#22C55E] hover:border-[#22C55E] hover:bg-[#22C55E]/20"
+                  : "border-[#2A2620] bg-[#1A1815] text-[#8C8478] hover:text-[#EDE6DA]"
+              }`}
+              title="Click to view 1-Click Fast Play Session details"
+            >
+              <Zap className={`w-3.5 h-3.5 ${isSessionActive ? "text-[#22C55E] fill-current" : "text-[#8C8478]"}`} />
+              <span className="font-semibold">{isSessionActive ? "1-Click Active" : "1-Click Off"}</span>
+              <span className="text-[10px] text-[#8C8478] group-hover:text-[#EDE6DA]">⚙</span>
+            </button>
           )}
 
           {/* Connect Wallet / Connected Info */}
@@ -219,6 +231,84 @@ export const TopBar: React.FC<TopBarProps> = ({
           )}
         </div>
       </div>
+
+      {/* 1-Click Fast Play Management Modal */}
+      {showSessionModal && (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-black/75 flex items-center justify-center p-4">
+          <div className="bg-[#1A1815] border border-[#2A2620] rounded-sm max-w-sm w-full p-5 shadow-2xl relative space-y-4">
+            <div className="flex items-center justify-between pb-2 border-b border-[#2A2620]">
+              <div className="flex items-center space-x-2">
+                <Zap className="w-4 h-4 text-[#22C55E]" />
+                <h3 className="font-fraunces text-base font-bold text-[#EDE6DA]">
+                  1-Click Fast Play
+                </h3>
+              </div>
+              <button
+                onClick={() => setShowSessionModal(false)}
+                className="text-[#8C8478] hover:text-[#EDE6DA] p-1 transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <div className="p-2.5 rounded-sm bg-[#22C55E]/10 border border-[#22C55E]/30 text-[#EDE6DA] flex items-center justify-between">
+                <div>
+                  <div className="font-mono font-bold text-[#22C55E] flex items-center space-x-1">
+                    <ShieldCheck className="w-3.5 h-3.5" />
+                    <span>Session Status: Active</span>
+                  </div>
+                  <div className="text-[11px] text-[#8C8478] mt-0.5">
+                    Zero wallet popups for bets & payouts
+                  </div>
+                </div>
+                <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded-sm bg-[#22C55E]/20 text-[#22C55E] font-bold">
+                  Active
+                </span>
+              </div>
+
+              <div className="space-y-1.5 font-mono text-[11px] text-[#8C8478] bg-[#0E0D0B] p-2.5 rounded-sm border border-[#2A2620]">
+                <div className="flex justify-between">
+                  <span>Scope:</span>
+                  <span className="text-[#EDE6DA]">deploy, claim</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Contract:</span>
+                  <span className="text-[#EDE6DA] truncate max-w-[170px]">game.amstr-admin-zxlhcx.testnet</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Allowance:</span>
+                  <span className="text-[#EDE6DA]">5 NEAR (Gas & Bets)</span>
+                </div>
+              </div>
+
+              <p className="text-[11px] text-[#8C8478] leading-relaxed">
+                Your picks are encrypted and signed instantly in browser memory using a scoped ephemeral key. You can play every round without wallet confirmation popups!
+              </p>
+            </div>
+
+            <div className="pt-2 border-t border-[#2A2620] flex items-center space-x-2">
+              <button
+                type="button"
+                onClick={async () => {
+                  await walletService.disableSessionKey();
+                  setShowSessionModal(false);
+                }}
+                className="flex-1 py-2 rounded-sm border border-[#C2483D]/40 text-[#C2483D] hover:bg-[#C2483D]/10 font-mono text-xs transition-colors"
+              >
+                Disable Session
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowSessionModal(false)}
+                className="flex-1 py-2 rounded-sm bg-[#C8763A] hover:bg-[#d88244] text-[#0E0D0B] font-bold text-xs transition-colors"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </header>
   );
 };
