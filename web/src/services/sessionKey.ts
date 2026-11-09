@@ -19,7 +19,9 @@ class SessionKeyService {
   private listeners: ((state: SessionKeyState) => void)[] = [];
 
   constructor() {
-    this.keyStore = new keyStores.BrowserLocalStorageKeyStore();
+    this.keyStore = typeof window !== "undefined"
+      ? new keyStores.BrowserLocalStorageKeyStore(window.localStorage, "amstr_session_ks_:")
+      : (new keyStores.InMemoryKeyStore() as any);
   }
 
   /**

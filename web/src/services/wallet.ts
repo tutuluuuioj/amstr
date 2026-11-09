@@ -151,30 +151,75 @@ class WalletService {
     await wallet.signOut();
   }
 
+  /**
+   * Check if an account has a local full access signing key (Passkey or Dev Account)
+   */
+  public isDirectLocalAccount(accountId?: string | null): boolean {
+    const acc = accountId || this.getState().accountId;
+    if (!acc) return false;
+    if (this.devAccountId && acc === this.devAccountId) return true;
+    if (passkeyService.getPasskeyKeyPair(acc) !== null) return true;
+    return false;
+  }
+
   private async getNearAccount(accountId: string) {
-    if (!DEV_KEY) {
-      throw new Error("No private key configured for local dev account. Please connect via standard NEAR wallet (Meteor, Here, MyNearWallet) or set VITE_DEV_PRIVATE_KEY in your local .env.");
+    const browserStore = new keyStores.BrowserLocalStorageKeyStore();
+    
+    // 1. If this is a Passkey account, ensure deterministic key is in browser keystore
+    const passkeyKp = passkeyService.getPasskeyKeyPair(accountId);
+    if (passkeyKp) {
+      await browserStore.setKey(CONFIG.NETWORK_ID, accountId, passkeyKp);
+      const nodeUrl = typeof window !== "undefined" && window.location.hostname === "localhost"
+        ? `${window.location.origin}/api/near-rpc`
+        : CONFIG.RPC_ENDPOINTS[0] || "https://near-testnet.drpc.org";
+
+      const near = await connect({
+        networkId: CONFIG.NETWORK_ID,
+        keyStore: browserStore,
+        nodeUrl,
+      });
+      return await near.account(accountId);
     }
-    const keyStore = new keyStores.InMemoryKeyStore();
-    const kp = KeyPair.fromString(DEV_KEY);
-    await keyStore.setKey("testnet", accountId, kp);
-    const nodeUrl = typeof window !== "undefined"
+
+    const keyPair = await browserStore.getKey(CONFIG.NETWORK_ID, accountId);
+
+    const nodeUrl = typeof window !== "undefined" && window.location.hostname === "localhost"
       ? `${window.location.origin}/api/near-rpc`
-      : "https://near-testnet.drpc.org";
-    const near = await connect({
-      networkId: "testnet",
-      keyStore,
-      nodeUrl,
-    });
-    return await near.account(accountId);
+      : CONFIG.RPC_ENDPOINTS[0] || "https://near-testnet.drpc.org";
+
+    if (keyPair) {
+      const near = await connect({
+        networkId: CONFIG.NETWORK_ID,
+        keyStore: browserStore,
+        nodeUrl,
+      });
+      return await near.account(accountId);
+    }
+
+    // 2. Fallback to local dev private key
+    if (DEV_KEY) {
+      const memStore = new keyStores.InMemoryKeyStore();
+      const kp = KeyPair.fromString(DEV_KEY);
+      await memStore.setKey(CONFIG.NETWORK_ID, accountId, kp);
+      const near = await connect({
+        networkId: CONFIG.NETWORK_ID,
+        keyStore: memStore,
+        nodeUrl,
+      });
+      return await near.account(accountId);
+    }
+
+    throw new Error(`No signing key found for account ${accountId}. Please re-connect with Face ID / Touch ID or your NEAR wallet.`);
   }
 
   /**
    * Bind referrer before deploy
    */
   public async bindReferrer(referrerId: string): Promise<any> {
-    if (this.devAccountId) {
-      const account = await this.getNearAccount(this.devAccountId);
+    const activeAccount = this.getState().accountId;
+    if (this.isDirectLocalAccount(activeAccount)) {
+      const accountId = activeAccount || this.devAccountId!;
+      const account = await this.getNearAccount(accountId);
       return await account.functionCall({
         contractId: CONFIG.CONTRACT_ID,
         methodName: "bind_referrer",
@@ -217,28 +262,12 @@ class WalletService {
     const totalDeposit = stakeYocto + storageYocto;
     const activeAccount = this.getState().accountId;
 
-    // 1-Click Session Key: Instant background signing with ZERO wallet popups
-    if (activeAccount && sessionKeyService.getSessionState(activeAccount).isActive) {
-      try {
-        console.log(`[1-Click Session] Signing deploy with session key for ${activeAccount}`);
-        return await sessionKeyService.executeWithSessionKey(
-          activeAccount,
-          "deploy",
-          {
-            round_id: roundId,
-            ciphertext: ciphertextBase64,
-            commit: commitBase64,
-          },
-          150000000000000n,
-          totalDeposit
-        );
-      } catch (err: any) {
-        console.warn("[1-Click Session] Deploy fallback to connected wallet:", err.message);
-      }
-    }
-
-    if (this.devAccountId) {
-      const account = await this.getNearAccount(this.devAccountId);
+    // 1. Direct Local Execution (Passkey or Dev Account)
+    // Instant 1-click execution with full access key, zero wallet popups!
+    if (this.isDirectLocalAccount(activeAccount)) {
+      const accountId = activeAccount || this.devAccountId!;
+      console.log(`[Direct Local Deploy] Signing deploy for ${accountId} with local full access key`);
+      const account = await this.getNearAccount(accountId);
       return await account.functionCall({
         contractId: CONFIG.CONTRACT_ID,
         methodName: "deploy",
@@ -252,6 +281,7 @@ class WalletService {
       });
     }
 
+    // 2. Standard Connected Wallet
     if (!this.selector) throw new Error("Wallet selector not initialized");
     const wallet = await this.selector.wallet();
 
@@ -293,7 +323,20 @@ class WalletService {
   public async claim(roundIds: number[]): Promise<any> {
     const activeAccount = this.getState().accountId;
 
-    // 1-Click Session Key: Instant background signing with ZERO wallet popups
+    // 1. Direct Local Execution (Passkey or Dev Account)
+    if (this.isDirectLocalAccount(activeAccount)) {
+      const accountId = activeAccount || this.devAccountId!;
+      console.log(`[Direct Local Claim] Signing claim for ${accountId} with local full access key`);
+      const account = await this.getNearAccount(accountId);
+      return await account.functionCall({
+        contractId: CONFIG.CONTRACT_ID,
+        methodName: "claim",
+        args: { round_ids: roundIds },
+        gas: 250000000000000n,
+      });
+    }
+
+    // 2. 1-Click Session Key: Instant background signing with ZERO wallet popups (for standard wallets)
     if (activeAccount && sessionKeyService.getSessionState(activeAccount).isActive) {
       try {
         console.log(`[1-Click Session] Signing claim with session key for ${activeAccount}`);
@@ -307,16 +350,6 @@ class WalletService {
       } catch (err: any) {
         console.warn("[1-Click Session] Claim fallback to connected wallet:", err.message);
       }
-    }
-
-    if (this.devAccountId) {
-      const account = await this.getNearAccount(this.devAccountId);
-      return await account.functionCall({
-        contractId: CONFIG.CONTRACT_ID,
-        methodName: "claim",
-        args: { round_ids: roundIds },
-        gas: 250000000000000n,
-      });
     }
 
     if (!this.selector) throw new Error("Wallet selector not initialized");
@@ -372,8 +405,10 @@ class WalletService {
    * Requirement 5: One-click storage reclaim for losers
    */
   public async reclaimStorage(roundIds: number[]): Promise<any> {
-    if (this.devAccountId) {
-      const account = await this.getNearAccount(this.devAccountId);
+    const activeAccount = this.getState().accountId;
+    if (this.isDirectLocalAccount(activeAccount)) {
+      const accountId = activeAccount || this.devAccountId!;
+      const account = await this.getNearAccount(accountId);
       return await account.functionCall({
         contractId: CONFIG.CONTRACT_ID,
         methodName: "reclaim_storage",
@@ -405,8 +440,10 @@ class WalletService {
    * Requirement 5: One-click refund for expired rounds
    */
   public async refundExpired(roundId: number, limit = 50): Promise<any> {
-    if (this.devAccountId) {
-      const account = await this.getNearAccount(this.devAccountId);
+    const activeAccount = this.getState().accountId;
+    if (this.isDirectLocalAccount(activeAccount)) {
+      const accountId = activeAccount || this.devAccountId!;
+      const account = await this.getNearAccount(accountId);
       return await account.functionCall({
         contractId: CONFIG.CONTRACT_ID,
         methodName: "refund_expired",
@@ -441,8 +478,10 @@ class WalletService {
     const yocto = parseAmstrToYocto(amountAmstr);
     if (BigInt(yocto) <= 0n) throw new Error("Amount must be greater than 0");
 
-    if (this.devAccountId) {
-      const account = await this.getNearAccount(this.devAccountId);
+    const activeAccount = this.getState().accountId;
+    if (this.isDirectLocalAccount(activeAccount)) {
+      const accountId = activeAccount || this.devAccountId!;
+      const account = await this.getNearAccount(accountId);
       return await account.functionCall({
         contractId: CONFIG.TOKEN_CONTRACT_ID,
         methodName: "ft_transfer_call",
@@ -486,8 +525,10 @@ class WalletService {
     const yocto = parseAmstrToYocto(amountAmstr);
     if (BigInt(yocto) <= 0n) throw new Error("Amount must be greater than 0");
 
-    if (this.devAccountId) {
-      const account = await this.getNearAccount(this.devAccountId);
+    const activeAccount = this.getState().accountId;
+    if (this.isDirectLocalAccount(activeAccount)) {
+      const accountId = activeAccount || this.devAccountId!;
+      const account = await this.getNearAccount(accountId);
       return await account.functionCall({
         contractId: CONFIG.STAKING_CONTRACT_ID,
         methodName: "unstake",
@@ -520,8 +561,10 @@ class WalletService {
    * Claim Yield: claim_rewards() on staking contract
    */
   public async claimStakingYield(): Promise<any> {
-    if (this.devAccountId) {
-      const account = await this.getNearAccount(this.devAccountId);
+    const activeAccount = this.getState().accountId;
+    if (this.isDirectLocalAccount(activeAccount)) {
+      const accountId = activeAccount || this.devAccountId!;
+      const account = await this.getNearAccount(accountId);
       return await account.functionCall({
         contractId: CONFIG.STAKING_CONTRACT_ID,
         methodName: "claim_rewards",
@@ -555,8 +598,10 @@ class WalletService {
    */
   public async fundAgentAccount(targetAccountId: string, amountNear: string | number): Promise<any> {
     const yocto = parseNearToYocto(amountNear);
-    if (this.devAccountId) {
-      const account = await this.getNearAccount(this.devAccountId);
+    const activeAccount = this.getState().accountId;
+    if (this.isDirectLocalAccount(activeAccount)) {
+      const accountId = activeAccount || this.devAccountId!;
+      const account = await this.getNearAccount(accountId);
       return await account.sendMoney(targetAccountId, BigInt(yocto));
     }
     if (!this.selector) throw new Error("Wallet not connected");
@@ -580,8 +625,9 @@ class WalletService {
   public async addAgentKeyToAccount(publicKeyStr: string): Promise<any> {
     const accountId = this.getState().accountId;
     if (!accountId) throw new Error("Wallet not connected");
-    if (this.devAccountId) {
-      const account = await this.getNearAccount(this.devAccountId);
+    if (this.isDirectLocalAccount(accountId)) {
+      const targetId = accountId || this.devAccountId!;
+      const account = await this.getNearAccount(targetId);
       return await account.addKey(publicKeyStr);
     }
     if (!this.selector) throw new Error("Wallet not connected");
@@ -615,9 +661,10 @@ class WalletService {
       allowanceNear
     );
 
-    if (this.devAccountId) {
+    if (this.isDirectLocalAccount(accountId)) {
       try {
-        const account = await this.getNearAccount(this.devAccountId);
+        const targetId = accountId || this.devAccountId!;
+        const account = await this.getNearAccount(targetId);
         await account.addKey(
           publicKey,
           CONFIG.CONTRACT_ID,
@@ -625,7 +672,7 @@ class WalletService {
           BigInt(parseNearToYocto(allowanceNear))
         );
       } catch (err: any) {
-        console.warn("Dev account addKey notice:", err.message);
+        console.warn("Direct account addKey notice:", err.message);
       }
       this.notify();
       return publicKey;
@@ -673,6 +720,7 @@ class WalletService {
     const passkeyAcc = await passkeyService.createPasskeyAccount(username);
     this.devAccountId = passkeyAcc.accountId;
     localStorage.setItem("amstr_dev_account", passkeyAcc.accountId);
+    await passkeyService.ensureKeyInKeyStore(passkeyAcc.accountId);
     await sessionKeyService.createSessionKeyPair(passkeyAcc.accountId, 48, "10");
     this.notify();
     return passkeyAcc.accountId;
@@ -685,6 +733,7 @@ class WalletService {
     const passkeyAcc = await passkeyService.loginWithPasskey();
     this.devAccountId = passkeyAcc.accountId;
     localStorage.setItem("amstr_dev_account", passkeyAcc.accountId);
+    await passkeyService.ensureKeyInKeyStore(passkeyAcc.accountId);
     await sessionKeyService.createSessionKeyPair(passkeyAcc.accountId, 48, "10");
     this.notify();
     return passkeyAcc.accountId;

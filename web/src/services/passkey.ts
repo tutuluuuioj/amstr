@@ -225,6 +225,28 @@ class PasskeyService {
   }
 
   /**
+   * Derive KeyPair for passkey account from saved credential
+   */
+  public getPasskeyKeyPair(accountId: string): KeyPair | null {
+    const saved = this.getSavedPasskeyAccount();
+    if (!saved || saved.accountId !== accountId) return null;
+    const seedMaterial = sha256(new TextEncoder().encode(`${saved.credentialId}:${saved.accountId}`));
+    return deriveNearKeyPairFromSeed(seedMaterial);
+  }
+
+  /**
+   * Ensure passkey key is present in browser KeyStore for near-api-js signing
+   */
+  public async ensureKeyInKeyStore(accountId: string): Promise<KeyPair | null> {
+    const kp = this.getPasskeyKeyPair(accountId);
+    if (kp) {
+      await this.keyStore.setKey(CONFIG.NETWORK_ID, accountId, kp);
+      return kp;
+    }
+    return null;
+  }
+
+  /**
    * Log out and clear saved passkey session
    */
   public async logoutPasskey(accountId?: string): Promise<void> {
