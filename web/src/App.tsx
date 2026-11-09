@@ -417,6 +417,13 @@ export const App: React.FC = () => {
         }
       }
 
+      // Update toast to prompt user for Meteor / WalletSelector popup approval
+      addToast(
+        "pending",
+        "Awaiting Wallet Approval",
+        "Please approve the transaction in your Meteor Wallet extension popup..."
+      );
+
       const txResult = await walletService.deploy(
         displayedRound.round_id,
         ciphertextBase64,
@@ -424,7 +431,11 @@ export const App: React.FC = () => {
         stakeNear
       );
 
-      const txHash = txResult?.transaction?.hash;
+      const txHash =
+        txResult?.transaction?.hash ||
+        txResult?.transaction_outcome?.id ||
+        (Array.isArray(txResult) && txResult[0]?.transaction?.hash) ||
+        undefined;
       addToast(
         "success",
         "Confidential Bet Deployed",

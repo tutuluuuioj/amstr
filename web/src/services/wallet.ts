@@ -335,11 +335,11 @@ class WalletService {
       });
     }
 
-    // 2. Standard Connected Wallet
+    // 2. Standard Connected Wallet (Meteor, Here, MyNearWallet)
     if (!this.selector) throw new Error("Wallet selector not initialized");
     const wallet = await this.selector.wallet();
 
-    return await wallet.signAndSendTransaction({
+    return await this.executeTransaction(wallet, {
       receiverId: CONFIG.CONTRACT_ID,
       actions: [
         {
