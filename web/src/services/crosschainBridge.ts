@@ -8,7 +8,7 @@ export interface DepositIntent {
   derivedAddress: string;
   expectedAmount: string;
   stakeNear: number;
-  roundId: number;
+  roundId?: number;
   status: "pending_deposit" | "confirming" | "bet_deployed" | "failed";
   txHash?: string;
   confirmations?: number;
@@ -39,9 +39,9 @@ export class CrossChainBridgeService {
     accountId: string;
     targetChain: "base" | "ethereum" | "arbitrum" | "solana";
     stakeNear: number;
-    roundId: number;
-    ciphertext: string;
-    commit: string;
+    roundId?: number;
+    ciphertext?: string;
+    commit?: string;
     expectedAmount?: string;
   }): Promise<DepositIntent> {
     const res = await fetch(`${this.keeperUrl}/multichain/deposit-intent`, {

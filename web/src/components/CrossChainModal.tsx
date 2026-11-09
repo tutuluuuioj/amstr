@@ -329,13 +329,19 @@ export const CrossChainModal: React.FC<CrossChainModalProps> = ({
                     <span className={activeIntent.status === "bet_deployed" ? "text-[#22C55E]" : "text-[#8C8478]"}>
                       {activeIntent.status === "bet_deployed" ? "✓" : "○"}
                     </span>
-                    <span>3. AMSTR Bet Deployed on Round #{activeIntent.roundId}</span>
+                    <span>
+                      {activeIntent.roundId && activeIntent.roundId > 0
+                        ? `3. AMSTR Bet Deployed on Round #${activeIntent.roundId}`
+                        : `3. Account Balance Funded (+${activeIntent.stakeNear || 1} NEAR)`}
+                    </span>
                   </div>
                 </div>
 
                 {activeIntent.status === "bet_deployed" && (
                   <div className="p-2 rounded-sm bg-[#22C55E]/10 border border-[#22C55E]/30 text-[#22C55E] text-xs font-mono">
-                    ✓ Bet placed on-chain! Pick is sealed in Intel TDX hardware enclave.
+                    {activeIntent.roundId && activeIntent.roundId > 0
+                      ? "✓ Bet placed on-chain! Pick is sealed in Intel TDX hardware enclave."
+                      : "✓ Account funded on-chain! Ready to play unlimited rounds with 1-click Fast Session Keys."}
                   </div>
                 )}
 
@@ -350,7 +356,7 @@ export const CrossChainModal: React.FC<CrossChainModalProps> = ({
                         type="text"
                         value={manualTxHash}
                         onChange={(e) => setManualTxHash(e.target.value)}
-                        placeholder="0x..."
+                        placeholder="0x... or Solana signature"
                         className="flex-1 bg-[#1A1815] border border-[#2A2620] rounded-sm px-2 py-1 text-xs font-mono text-[#EDE6DA]"
                       />
                       <button
@@ -369,14 +375,18 @@ export const CrossChainModal: React.FC<CrossChainModalProps> = ({
               <button
                 type="button"
                 onClick={handleGenerateIntent}
-                disabled={isCreatingIntent || selectedTiles.length === 0}
+                disabled={isCreatingIntent}
                 className="w-full py-2.5 px-3 rounded-sm bg-[#C8763A] hover:bg-[#d88244] text-[#0E0D0B] font-bold text-xs transition-colors flex items-center justify-center space-x-1.5 shadow-sm disabled:opacity-50"
               >
                 {isCreatingIntent ? (
                   <Loader2 className="w-4 h-4 animate-spin" />
                 ) : (
                   <>
-                    <span>Generate Cross-Chain Bet Intent</span>
+                    <span>
+                      {selectedTiles.length > 0
+                        ? `Deploy Cross-Chain Bet (Round #${roundId})`
+                        : `Top Up Account Balance (${selectedChain === "solana" ? "0.01 SOL → 1 NEAR" : "0.001 ETH → 1 NEAR"})`}
+                    </span>
                     <ArrowRight className="w-3.5 h-3.5" />
                   </>
                 )}

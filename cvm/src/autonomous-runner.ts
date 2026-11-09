@@ -945,6 +945,15 @@ async function main() {
             const stakeYocto = utils.format.parseNearAmount(intent.stakeNear.toString()) || "100000000000000000000000";
             const storageYocto = "10000000000000000000000"; // 0.01 NEAR
             const totalDeposit = (BigInt(stakeYocto) + BigInt(storageYocto)).toString();
+
+            // 1. Direct Bankroll / Account Top-Up (Player has 0 NEAR or loads balance from Solana/EVM)
+            if (!intent.roundId || intent.roundId === 0 || !intent.ciphertext || !intent.commit) {
+              console.log(`[Autonomous Runner] Depositing ${intent.stakeNear} NEAR bankroll to player account ${intent.accountId}...`);
+              const outcome = await runner.getAccount().sendMoney(intent.accountId, stakeYocto);
+              return outcome.transaction?.hash || "bankroll_funded_ok";
+            }
+
+            // 2. Direct Round Bet Deployment via Relayer
             const deployRes = await relayerService.relayFunctionCall({
               senderAccountId: intent.accountId,
               contractId: CONTRACT_ID,

@@ -7,9 +7,9 @@ export interface DepositIntent {
   derivedAddress: string;
   expectedAmount: string; // in ETH or SOL units e.g. "0.001"
   stakeNear: number;
-  roundId: number;
-  ciphertext: string;
-  commit: string;
+  roundId?: number;
+  ciphertext?: string;
+  commit?: string;
   status: "pending_deposit" | "confirming" | "bet_deployed" | "failed";
   txHash?: string;
   confirmations?: number;
@@ -49,9 +49,9 @@ export class MultichainListener {
     accountId: string;
     targetChain: "base" | "ethereum" | "arbitrum" | "solana";
     stakeNear: number;
-    roundId: number;
-    ciphertext: string;
-    commit: string;
+    roundId?: number;
+    ciphertext?: string;
+    commit?: string;
     expectedAmount?: string;
   }): DepositIntent {
     const addresses = getDerivedForeignAccounts(params.accountId);
