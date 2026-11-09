@@ -433,6 +433,38 @@ export const BetSlip: React.FC<BetSlipProps> = ({
         </div>
       )}
 
+      {/* Quick Account Address & Faucet Bar */}
+      {isConnected && (
+        <div className="flex items-center justify-between text-[11px] font-mono text-[#8C8478] px-1 py-0.5">
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              if (accountId) {
+                navigator.clipboard.writeText(accountId);
+              }
+            }}
+            className="hover:text-[#EDE6DA] flex items-center space-x-1 transition-colors group text-left"
+            title="Click to copy account address"
+          >
+            <span className="text-[#8C8478]">Address:</span>
+            <span className="text-[#EDE6DA] group-hover:text-[#C8763A] underline truncate max-w-[130px] sm:max-w-[150px]">
+              {accountId}
+            </span>
+          </button>
+          <a
+            href={CONFIG.FAUCET_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-[#C8763A] hover:text-[#d88244] hover:underline flex items-center space-x-1 transition-colors"
+            title="Get 10 free testnet NEAR"
+          >
+            <span>Get Testnet NEAR</span>
+            <ExternalLink className="w-2.5 h-2.5" />
+          </a>
+        </div>
+      )}
+
       {/* Big copper button: "Back to Live Round" if past round, otherwise "Encrypt & Deploy" or phase status */}
       {isViewingPastRound ? (
         <button
