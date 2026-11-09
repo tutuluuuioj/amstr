@@ -1,5 +1,6 @@
-import React from "react";
+import React, { useState, useEffect } from "react";
 import { RoundView, EntryView, JackpotPoolView, formatYoctoNear } from "../services/near";
+import { walletService } from "../services/wallet";
 
 interface RoundPanelProps {
   round: RoundView | null;
@@ -14,6 +15,16 @@ export const RoundPanel: React.FC<RoundPanelProps> = ({
   jackpotPools,
   entries = [],
 }) => {
+  const [connectedChain, setConnectedChain] = useState<"near" | "solana" | "evm">(() =>
+    walletService.getConnectedChain()
+  );
+
+  useEffect(() => {
+    return walletService.subscribe((state) => {
+      setConnectedChain(state.connectedChain || "near");
+    });
+  }, []);
+
   if (!round) {
     return (
       <div className="bg-[#1A1815] border border-[#2A2620] rounded-sm p-5 space-y-4">
@@ -145,18 +156,53 @@ export const RoundPanel: React.FC<RoundPanelProps> = ({
         </div>
       </div>
 
-      {/* Pot in NEAR in large Fraunces gold #E3C07A */}
-      <div className="pt-2 border-t border-[#2A2620]">
-        <div className="text-[11px] text-[#8C8478] uppercase tracking-wider mb-1">
-          Total Net Pot
-        </div>
-        <div className="font-fraunces text-3xl font-extrabold text-[#E3C07A]">
-          {formatYoctoNear(round.total_net, 3)} NEAR
-        </div>
-        <div className="text-xs text-[#8C8478] mt-1">
-          {round.entry_count} {round.entry_count === 1 ? "player" : "players"} joined
-        </div>
-      </div>
+      {/* Universal Multi-Chain Pot */}
+      {(() => {
+        const isEvm = connectedChain === "evm";
+        const isSolana = connectedChain === "solana";
+        const nearAmount = parseFloat(formatYoctoNear(round.total_net, 4)) || 0;
+
+        let primaryValue = `${formatYoctoNear(round.total_net, 3)} NEAR`;
+        let subText: string | null = null;
+
+        if (isEvm) {
+          const ethVal = (nearAmount / 1000).toFixed(4);
+          primaryValue = `~${ethVal} ETH`;
+          subText = `${formatYoctoNear(round.total_net, 3)} NEAR`;
+        } else if (isSolana) {
+          const solVal = (nearAmount / 100).toFixed(4);
+          primaryValue = `~${solVal} SOL`;
+          subText = `${formatYoctoNear(round.total_net, 3)} NEAR`;
+        }
+
+        return (
+          <div className="pt-2 border-t border-[#2A2620]">
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-[11px] text-[#8C8478] uppercase tracking-wider">
+                Total Net Pot
+              </span>
+              {(isEvm || isSolana) && (
+                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded-sm border border-[#2A2620] text-[#5FA88A] bg-[#5FA88A]/10">
+                  🌐 Multichain Pool
+                </span>
+              )}
+            </div>
+            <div className="font-fraunces text-3xl font-extrabold text-[#E3C07A]">
+              {primaryValue}
+            </div>
+            <div className="text-xs text-[#8C8478] mt-1 flex items-center justify-between">
+              <span>
+                {round.entry_count} {round.entry_count === 1 ? "player" : "players"} joined
+              </span>
+              {subText && (
+                <span className="font-mono text-[11px] text-[#8C8478]/80">
+                  ({subText})
+                </span>
+              )}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Settled Round Winner & Outcome Showcase */}
       {round.status === "Settled" && (
@@ -192,7 +238,11 @@ export const RoundPanel: React.FC<RoundPanelProps> = ({
                   <div className="text-[11px] text-[#8C8478] pt-1.5 border-t border-[#E3C07A]/20 flex items-center justify-between font-mono">
                     <span>Payout:</span>
                     <span className="text-[#EDE6DA] font-bold">
-                      {formatYoctoNear(round.total_net, 3)} NEAR
+                      {connectedChain === "evm"
+                        ? `~${((parseFloat(formatYoctoNear(round.total_net, 4)) || 0) / 1000).toFixed(4)} ETH`
+                        : connectedChain === "solana"
+                        ? `~${((parseFloat(formatYoctoNear(round.total_net, 4)) || 0) / 100).toFixed(4)} SOL`
+                        : `${formatYoctoNear(round.total_net, 3)} NEAR`}
                     </span>
                   </div>
                 </div>
@@ -203,7 +253,11 @@ export const RoundPanel: React.FC<RoundPanelProps> = ({
                 <div className="flex items-center justify-between text-[#EDE6DA] font-medium">
                   <span>No Winner (Tile #{round.winning_tile})</span>
                   <span className="font-mono text-[#E3C07A] font-bold">
-                    +{formatYoctoNear(round.total_net, 3)} NEAR
+                    +{connectedChain === "evm"
+                      ? `~${((parseFloat(formatYoctoNear(round.total_net, 4)) || 0) / 1000).toFixed(4)} ETH`
+                      : connectedChain === "solana"
+                      ? `~${((parseFloat(formatYoctoNear(round.total_net, 4)) || 0) / 100).toFixed(4)} SOL`
+                      : `${formatYoctoNear(round.total_net, 3)} NEAR`}
                   </span>
                 </div>
                 <div className="text-[11px] text-[#C8763A] font-mono font-semibold">

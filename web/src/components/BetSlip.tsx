@@ -180,14 +180,18 @@ export const BetSlip: React.FC<BetSlipProps> = ({
                 Won on Tile #{round?.winning_tile}
               </div>
               <div className="font-mono text-xs text-[#EDE6DA] mt-1">
-                Pot share: {formatYoctoNear(round?.total_net || "0", 3)} NEAR
+                Pot share: {isEvm
+                  ? `~${((parseFloat(formatYoctoNear(round?.total_net || "0", 4)) || 0) / 1000).toFixed(4)} ETH (${formatYoctoNear(round?.total_net || "0", 3)} NEAR)`
+                  : isSolana
+                  ? `~${((parseFloat(formatYoctoNear(round?.total_net || "0", 4)) || 0) / 100).toFixed(4)} SOL (${formatYoctoNear(round?.total_net || "0", 3)} NEAR)`
+                  : `${formatYoctoNear(round?.total_net || "0", 3)} NEAR`}
               </div>
             </div>
 
             {entry.claimed ? (
               <div className="p-3 bg-[#5FA88A]/10 border border-[#5FA88A]/30 rounded-sm space-y-1.5 text-center">
                 <div className="font-fraunces text-sm font-bold text-[#5FA88A]">
-                  Claimed {formatYoctoNear(round?.total_net || "0", 2)} NEAR
+                  Claimed {isEvm ? "ETH" : isSolana ? "SOL" : `${formatYoctoNear(round?.total_net || "0", 2)} NEAR`}
                 </div>
                 <div className="flex items-center justify-center space-x-1 text-[11px] font-mono">
                   <span className="text-[#8C8478]">Payout sent to wallet</span>
@@ -206,6 +210,10 @@ export const BetSlip: React.FC<BetSlipProps> = ({
             ) : (
               <button
                 onClick={async () => {
+                  if (isEvm || isSolana) {
+                    setShowCrossChainModal(true);
+                    return;
+                  }
                   setIsActionLoading(true);
                   try {
                     await onClaim();
@@ -217,7 +225,7 @@ export const BetSlip: React.FC<BetSlipProps> = ({
                 className="w-full py-2.5 rounded-sm bg-[#E3C07A] hover:bg-[#ebd299] text-[#0E0D0B] font-bold text-xs transition-colors flex items-center justify-center space-x-1.5 shadow-sm"
               >
                 {isActionLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
-                <span>Claim Payout</span>
+                <span>Claim Payout in {currencySymbol}</span>
               </button>
             )}
           </div>
