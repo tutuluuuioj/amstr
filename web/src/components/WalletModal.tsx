@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { X, Wallet, UserCheck, ExternalLink, Sparkles, Fingerprint, Zap, Loader2 } from "lucide-react";
 import { walletService } from "../services/wallet";
+import { passkeyService } from "../services/passkey";
 import { CONFIG } from "../config";
 
 interface WalletModalProps {
@@ -33,15 +34,22 @@ export const WalletModal: React.FC<WalletModalProps> = ({ isOpen, onClose }) => 
     setLoadingPasskey(true);
     setErrorMsg(null);
     try {
-      try {
+      const saved = passkeyService.getSavedPasskeyAccount();
+      if (saved) {
         await walletService.loginWithPasskey();
-      } catch (loginErr: any) {
-        // If login failed or no existing passkey, create a fresh passkey account
+      } else {
         await walletService.connectWithPasskey();
       }
       onClose();
     } catch (err: any) {
-      setErrorMsg(err.message || "Passkey biometric authentication failed.");
+      console.warn("Passkey auth error:", err);
+      // Clean up common user-cancel or browser errors for a user-friendly message
+      const msg = err.message || "";
+      if (msg.includes("NotAllowedError") || msg.includes("cancelled")) {
+        setErrorMsg("Biometric verification cancelled or timed out.");
+      } else {
+        setErrorMsg(msg || "Passkey biometric authentication failed.");
+      }
     } finally {
       setLoadingPasskey(false);
     }

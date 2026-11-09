@@ -1,5 +1,6 @@
-import { KeyPair, connect, keyStores } from "near-api-js";
+import { KeyPair, connect, keyStores, utils } from "near-api-js";
 import { sha256 } from "@noble/hashes/sha256";
+import nacl from "tweetnacl";
 import { CONFIG } from "../config";
 
 export interface PasskeyAccount {
@@ -10,6 +11,15 @@ export interface PasskeyAccount {
 }
 
 const PASSKEY_STORAGE_KEY = "amstr_passkey_account";
+
+/**
+ * Derive deterministic, valid Ed25519 KeyPair from 32-byte seed material
+ */
+export function deriveNearKeyPairFromSeed(seed32Bytes: Uint8Array): KeyPair {
+  const naclKp = nacl.sign.keyPair.fromSeed(seed32Bytes);
+  const base58Secret = utils.serialize.base_encode(naclKp.secretKey);
+  return KeyPair.fromString(`ed25519:${base58Secret}`);
+}
 
 class PasskeyService {
   private keyStore: keyStores.BrowserLocalStorageKeyStore;
@@ -92,9 +102,7 @@ class PasskeyService {
 
     // Derive deterministic in-memory NEAR ed25519 keypair for the passkey session
     const seedMaterial = sha256(new TextEncoder().encode(`${credentialId}:${accountId}`));
-    const keyPair = KeyPair.fromString(
-      `ed25519:${Buffer.from(seedMaterial).toString("hex")}`
-    );
+    const keyPair = deriveNearKeyPairFromSeed(seedMaterial);
     const publicKey = keyPair.getPublicKey().toString();
 
     // Store in BrowserLocalStorageKeyStore for seamless RPC transaction execution
@@ -153,9 +161,7 @@ class PasskeyService {
     // Recover or generate deterministic account for newly authenticated device
     const accountId = `player_${credential.id.slice(0, 8)}.testnet`;
     const seedMaterial = sha256(new TextEncoder().encode(`${credential.id}:${accountId}`));
-    const keyPair = KeyPair.fromString(
-      `ed25519:${Buffer.from(seedMaterial).toString("hex")}`
-    );
+    const keyPair = deriveNearKeyPairFromSeed(seedMaterial);
     const publicKey = keyPair.getPublicKey().toString();
 
     await this.keyStore.setKey(CONFIG.NETWORK_ID, accountId, keyPair);
