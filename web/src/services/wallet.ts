@@ -97,8 +97,8 @@ class WalletService {
   }
 
   public connectSolanaWallet(solAddress: string): void {
-    const clean = solAddress.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 14);
-    const accountId = `sol_${clean}.testnet`;
+    const clean = solAddress.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 10);
+    const accountId = `sol_${clean}.amstr-admin-zxlhcx.testnet`;
     this.devAccountId = accountId;
     this.connectedChain = "solana";
     this.foreignAddress = solAddress;
@@ -109,8 +109,8 @@ class WalletService {
   }
 
   public connectEvmWallet(evmAddress: string): void {
-    const clean = evmAddress.toLowerCase().replace("0x", "").slice(0, 14);
-    const accountId = `evm_${clean}.testnet`;
+    const clean = evmAddress.toLowerCase().replace("0x", "").slice(0, 10);
+    const accountId = `evm_${clean}.amstr-admin-zxlhcx.testnet`;
     this.devAccountId = accountId;
     this.connectedChain = "evm";
     this.foreignAddress = evmAddress;

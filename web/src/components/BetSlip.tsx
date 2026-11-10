@@ -212,11 +212,12 @@ export const BetSlip: React.FC<BetSlipProps> = ({
         mask |= (1 << tile);
       }
       const salt = nacl.randomBytes(32);
+      const clean = (foreignAddress || "").toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 10);
       const playerAccountId =
         accountId ||
         (isSolana
-          ? `sol_${foreignAddress?.slice(0, 8) || "player"}.testnet`
-          : `evm_${foreignAddress?.slice(2, 10) || "player"}.testnet`);
+          ? `sol_${clean || "player"}.amstr-admin-zxlhcx.testnet`
+          : `evm_${clean || "player"}.amstr-admin-zxlhcx.testnet`);
       const commit = computeCommit(playerAccountId, round.round_id, mask, salt);
       if (accountId) {
         savePickSalt(round.round_id, accountId, salt, mask, commit);
