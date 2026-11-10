@@ -3,6 +3,7 @@ import { getDerivedForeignAccounts, DerivedForeignAccounts } from "./chainSig";
 import nacl from "tweetnacl";
 import { sha256 } from "@noble/hashes/sha256";
 import bs58 from "bs58";
+import { Buffer } from "buffer";
 
 export interface DepositIntent {
   intentId: string;

@@ -1,5 +1,15 @@
 // Polyfill to ensure compatibility between near-api-js and @near-js/crypto
 import * as borsh from "borsh";
+import { Buffer } from "buffer";
+
+if (typeof window !== "undefined") {
+  if (typeof (window as any).Buffer === "undefined") {
+    (window as any).Buffer = Buffer;
+  }
+  if (typeof (window as any).global === "undefined") {
+    (window as any).global = window;
+  }
+}
 
 try {
   const target = borsh as any;

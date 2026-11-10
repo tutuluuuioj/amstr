@@ -45,6 +45,7 @@ export const BetSlip: React.FC<BetSlipProps> = ({
   const [referralCode, setReferralCode] = useState<string>("");
   const [isActionLoading, setIsActionLoading] = useState<boolean>(false);
   const [showCrossChainModal, setShowCrossChainModal] = useState<boolean>(false);
+  const [crossChainModalTab, setCrossChainModalTab] = useState<"deposit" | "payout">("deposit");
   const [isSessionActive, setIsSessionActive] = useState<boolean>(() =>
     accountId ? sessionKeyService.getSessionState(accountId).isActive : false
   );
@@ -211,6 +212,7 @@ export const BetSlip: React.FC<BetSlipProps> = ({
               <button
                 onClick={async () => {
                   if (isEvm || isSolana) {
+                    setCrossChainModalTab("payout");
                     setShowCrossChainModal(true);
                     return;
                   }
@@ -540,7 +542,10 @@ export const BetSlip: React.FC<BetSlipProps> = ({
       ) : isEvm || isSolana ? (
         <button
           type="button"
-          onClick={() => setShowCrossChainModal(true)}
+          onClick={() => {
+            setCrossChainModalTab("deposit");
+            setShowCrossChainModal(true);
+          }}
           disabled={!isRoundOpen || selectedTiles.size === 0}
           className={`w-full py-3 rounded-sm font-bold text-xs tracking-wider transition-all uppercase flex items-center justify-center space-x-2 shadow-md ${
             isEvm 
@@ -594,7 +599,10 @@ export const BetSlip: React.FC<BetSlipProps> = ({
       {!isEvm && !isSolana && isConnected && !isViewingPastRound && isRoundOpen && (
         <button
           type="button"
-          onClick={() => setShowCrossChainModal(true)}
+          onClick={() => {
+            setCrossChainModalTab("deposit");
+            setShowCrossChainModal(true);
+          }}
           className="w-full py-2.5 rounded-sm border border-[#2A2620] hover:border-[#22C55E]/60 bg-[#0E0D0B] text-[#EDE6DA] hover:text-[#22C55E] text-xs font-mono transition-colors flex items-center justify-center space-x-1.5 shadow-sm"
         >
           <span className="text-[#22C55E]">⚡</span>
@@ -620,6 +628,7 @@ export const BetSlip: React.FC<BetSlipProps> = ({
         selectedTiles={Array.from(selectedTiles)}
         stakeNear={stakeVal}
         expectedAmount={stakeAmount}
+        initialTab={crossChainModalTab}
       />
     </div>
   );

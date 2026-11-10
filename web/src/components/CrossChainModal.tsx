@@ -15,6 +15,7 @@ interface CrossChainModalProps {
   expectedAmount?: string;
   ciphertext?: string;
   commit?: string;
+  initialTab?: "deposit" | "payout";
 }
 
 export const CrossChainModal: React.FC<CrossChainModalProps> = ({
@@ -27,8 +28,9 @@ export const CrossChainModal: React.FC<CrossChainModalProps> = ({
   expectedAmount,
   ciphertext = "",
   commit = "",
+  initialTab = "deposit",
 }) => {
-  const [activeTab, setActiveTab] = useState<"deposit" | "payout">("deposit");
+  const [activeTab, setActiveTab] = useState<"deposit" | "payout">(initialTab);
   const [selectedChain, setSelectedChain] = useState<"base" | "ethereum" | "solana">("base");
   const [derivedAccounts, setDerivedAccounts] = useState<DerivedForeignAccounts | null>(null);
   const [copiedField, setCopiedField] = useState<string | null>(null);
@@ -48,8 +50,11 @@ export const CrossChainModal: React.FC<CrossChainModalProps> = ({
   const [isRequestingPayout, setIsRequestingPayout] = useState(false);
   const [payoutSuccessTx, setPayoutSuccessTx] = useState<string | null>(null);
 
-  // Pre-select chain and recipient based on connected wallet
+  // Pre-select chain, recipient and tab based on connected wallet
   useEffect(() => {
+    if (isOpen && initialTab) {
+      setActiveTab(initialTab);
+    }
     const chain = walletService.getConnectedChain();
     if (chain === "solana") {
       setSelectedChain("solana");
@@ -64,7 +69,7 @@ export const CrossChainModal: React.FC<CrossChainModalProps> = ({
     if (foreign) {
       setPayoutRecipient(foreign);
     }
-  }, [isOpen]);
+  }, [isOpen, initialTab]);
 
   useEffect(() => {
     if (accountId) {
