@@ -69,6 +69,16 @@ app.post("/player/entry", (req: Request, res: Response) => {
   const key = `${round_id}:${account_id}`;
   playerEntriesStore[key] = { round_id, account_id, mask, salt, commit };
   console.log(`[Local Relayer] Saved pick secrets for ${key}`);
+
+  // Forward to remote settlement keeper so it can reveal_batch and settle on NEAR without delay
+  try {
+    fetch("https://amstr-keeper.fly.dev/player/entry", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ round_id, account_id, mask, salt, commit }),
+    }).catch(() => {});
+  } catch (_) {}
+
   res.json({ success: true, saved: key });
 });
 

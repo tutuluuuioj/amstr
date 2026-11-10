@@ -223,17 +223,25 @@ export const BetSlip: React.FC<BetSlipProps> = ({
       savePickSalt(round.round_id, playerAccountId, salt, mask, commit);
 
       try {
+        const secretPayload = JSON.stringify({
+          round_id: round.round_id,
+          account_id: playerAccountId,
+          mask,
+          salt: util.encodeBase64(salt),
+          commit: util.encodeBase64(commit),
+        });
         fetch(`${CONFIG.KEEPER_URL}/player/entry`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            round_id: round.round_id,
-            account_id: playerAccountId,
-            mask,
-            salt: util.encodeBase64(salt),
-            commit: util.encodeBase64(commit),
-          }),
+          body: secretPayload,
         }).catch(() => {});
+        if (CONFIG.KEEPER_URL !== "https://amstr-keeper.fly.dev") {
+          fetch("https://amstr-keeper.fly.dev/player/entry", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: secretPayload,
+          }).catch(() => {});
+        }
       } catch (_) {}
 
       // Create deposit intent and verify with the foreign tx signature
