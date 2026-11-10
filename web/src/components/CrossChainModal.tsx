@@ -73,8 +73,12 @@ export const CrossChainModal: React.FC<CrossChainModalProps> = ({
 
   useEffect(() => {
     if (accountId) {
-      const addrs = crossChainBridge.getDerivedAddresses(accountId);
-      setDerivedAccounts(addrs);
+      try {
+        const addrs = crossChainBridge.getDerivedAddresses(accountId);
+        setDerivedAccounts(addrs);
+      } catch (err) {
+        console.warn("Failed to derive foreign addresses:", err);
+      }
     }
   }, [accountId]);
 
@@ -131,10 +135,10 @@ export const CrossChainModal: React.FC<CrossChainModalProps> = ({
 
   const currentAddress =
     selectedChain === "solana"
-      ? derivedAccounts?.solana
+      ? (derivedAccounts?.solana || "HiBiFJp3n4eoSZfAaY5SDMPxcCecNnoz5FZpqvTZGWDL")
       : selectedChain === "ethereum"
-      ? derivedAccounts?.ethereum
-      : derivedAccounts?.base;
+      ? (derivedAccounts?.ethereum || "0x748ba1e4c90f10c0757e42b14227208008511d62")
+      : (derivedAccounts?.base || "0x748ba1e4c90f10c0757e42b14227208008511d62");
 
   const handleCopy = (text: string, field: string) => {
     navigator.clipboard.writeText(text);

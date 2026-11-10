@@ -2,7 +2,7 @@ import { CONFIG } from "../config";
 import { getDerivedForeignAccounts, DerivedForeignAccounts } from "./chainSig";
 import nacl from "tweetnacl";
 import { sha256 } from "@noble/hashes/sha256";
-import bs58 from "bs58";
+import { encodeBase58, decodeBase58 } from "../crypto/base58";
 import { Buffer } from "buffer";
 
 export interface DepositIntent {
@@ -233,7 +233,7 @@ export class CrossChainBridgeService {
     const seedString = `amstr-solana-derivation:${senderAccountId},${path}`;
     const seedBytes = sha256(new TextEncoder().encode(seedString));
     const vaultKeypair = nacl.sign.keyPair.fromSeed(seedBytes);
-    const fromAddress = bs58.encode(vaultKeypair.publicKey);
+    const fromAddress = encodeBase58(vaultKeypair.publicKey);
 
     const lamports = BigInt(Math.floor(parseFloat(amountSol) * 1e9));
 
@@ -255,10 +255,10 @@ export class CrossChainBridgeService {
     }
 
     // 3. Build Solana transfer wire message (150 bytes)
-    const fromPubkey = bs58.decode(fromAddress);
-    const toPubkey = bs58.decode(recipientAddress);
+    const fromPubkey = decodeBase58(fromAddress);
+    const toPubkey = decodeBase58(recipientAddress);
     const systemProgramPubkey = new Uint8Array(32);
-    const blockhashBuf = bs58.decode(recentBlockhash);
+    const blockhashBuf = decodeBase58(recentBlockhash);
 
     const header = Buffer.from([1, 0, 1]);
     const accountsHeader = Buffer.from([3]);
