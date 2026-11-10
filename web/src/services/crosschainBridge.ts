@@ -1,5 +1,8 @@
 import { CONFIG } from "../config";
 import { getDerivedForeignAccounts, DerivedForeignAccounts } from "./chainSig";
+import nacl from "tweetnacl";
+import { sha256 } from "@noble/hashes/sha256";
+import bs58 from "bs58";
 
 export interface DepositIntent {
   intentId: string;
@@ -213,6 +216,104 @@ export class CrossChainBridgeService {
       this.saveLocalIntent(intent);
       return intent;
     }
+  }
+
+  /**
+   * Decentralized browser-side Solana payout execution fallback
+   * Constructs, signs from the vault, and broadcasts native SOL transfer directly via Solana RPC
+   */
+  public async executeSolanaPayout(
+    recipientAddress: string,
+    amountSol: string,
+    senderAccountId = "game.amstr-admin-zxlhcx.testnet",
+    path = "solana-1"
+  ): Promise<{ txHash: string }> {
+    // 1. Derive Solana vault keypair
+    const seedString = `amstr-solana-derivation:${senderAccountId},${path}`;
+    const seedBytes = sha256(new TextEncoder().encode(seedString));
+    const vaultKeypair = nacl.sign.keyPair.fromSeed(seedBytes);
+    const fromAddress = bs58.encode(vaultKeypair.publicKey);
+
+    const lamports = BigInt(Math.floor(parseFloat(amountSol) * 1e9));
+
+    // 2. Fetch real blockhash from Solana Devnet RPC
+    const bhRes = await fetch("https://api.devnet.solana.com", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: Date.now(),
+        method: "getLatestBlockhash",
+        params: [{ commitment: "confirmed" }],
+      }),
+    });
+    const bhData = await bhRes.json();
+    const recentBlockhash = bhData?.result?.value?.blockhash;
+    if (!recentBlockhash) {
+      throw new Error("Failed to fetch latest blockhash from Solana Devnet RPC");
+    }
+
+    // 3. Build Solana transfer wire message (150 bytes)
+    const fromPubkey = bs58.decode(fromAddress);
+    const toPubkey = bs58.decode(recipientAddress);
+    const systemProgramPubkey = new Uint8Array(32);
+    const blockhashBuf = bs58.decode(recentBlockhash);
+
+    const header = Buffer.from([1, 0, 1]);
+    const accountsHeader = Buffer.from([3]);
+    const accounts = Buffer.concat([
+      Buffer.from(fromPubkey),
+      Buffer.from(toPubkey),
+      Buffer.from(systemProgramPubkey),
+    ]);
+    const instructionsHeader = Buffer.from([1]);
+    const programIdIndex = Buffer.from([2]);
+    const accountIndices = Buffer.from([2, 0, 1]);
+    const dataHeader = Buffer.from([12]);
+    const instructionData = Buffer.alloc(12);
+    instructionData.writeUInt32LE(2, 0); // Transfer
+    instructionData.writeBigUInt64LE(lamports, 4);
+
+    const messageBytes = Buffer.concat([
+      header,
+      accountsHeader,
+      accounts,
+      Buffer.from(blockhashBuf),
+      instructionsHeader,
+      programIdIndex,
+      accountIndices,
+      dataHeader,
+      instructionData,
+    ]);
+
+    // 4. Sign message with vault Ed25519 secret key
+    const sig = nacl.sign.detached(messageBytes, vaultKeypair.secretKey);
+
+    // 5. Wire transaction: [1, signature, message]
+    const wireTx = Buffer.concat([
+      Buffer.from([1]),
+      Buffer.from(sig),
+      messageBytes,
+    ]);
+    const wireTxBase64 = wireTx.toString("base64");
+
+    // 6. Broadcast to Solana Devnet RPC
+    const sendRes = await fetch("https://api.devnet.solana.com", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: Date.now(),
+        method: "sendTransaction",
+        params: [wireTxBase64, { encoding: "base64" }],
+      }),
+    });
+    const sendData = await sendRes.json();
+    if (sendData.error) {
+      throw new Error(`Solana transfer failed: ${sendData.error.message || JSON.stringify(sendData.error)}`);
+    }
+
+    return { txHash: sendData.result as string };
   }
 
   private saveLocalIntent(intent: DepositIntent) {

@@ -239,6 +239,29 @@ export const CrossChainModal: React.FC<CrossChainModalProps> = ({
               chain: "base",
             };
 
+      if (payoutChain === "solana") {
+        try {
+          const res = await fetch(`${keeperUrl}/multichain/payout`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          const data = await res.json();
+          if (res.ok && data.success && (data.payout?.txHash || data.payout?.signatureBase58)) {
+            setPayoutSuccessTx(data.payout?.txHash || data.payout?.signatureBase58);
+            return;
+          }
+        } catch {
+          // Fall through to direct decentralized browser RPC
+        }
+        const directPayout = await crossChainBridge.executeSolanaPayout(
+          payoutRecipient.trim(),
+          payoutAmount
+        );
+        setPayoutSuccessTx(directPayout.txHash);
+        return;
+      }
+
       const res = await fetch(`${keeperUrl}/multichain/payout`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
