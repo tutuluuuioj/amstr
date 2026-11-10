@@ -220,6 +220,77 @@ export class CrossChainBridgeService {
   }
 
   /**
+   * Directly triggers Phantom browser extension to sign & send native SOL transfer
+   * to the protocol vault without intermediate modal steps.
+   */
+  public async payWithPhantom(
+    amountSol: string,
+    recipientVault = "HiBiFJp3n4eoSZfAaY5SDMPxcCecNnoz5FZpqvTZGWDL"
+  ): Promise<{ signature: string }> {
+    const provider = (window as any).solana || (window as any).phantom?.solana;
+    if (!provider?.isPhantom) {
+      window.open("https://phantom.app/", "_blank");
+      throw new Error("Phantom wallet not detected. Please install Phantom from https://phantom.app/");
+    }
+
+    if (!provider.isConnected) {
+      await provider.connect();
+    }
+
+    const { Connection, PublicKey, Transaction, SystemProgram, LAMPORTS_PER_SOL } = await import("@solana/web3.js");
+
+    const fromPubkey = provider.publicKey;
+    const toPubkey = new PublicKey(recipientVault);
+    const lamports = Math.floor(parseFloat(amountSol) * LAMPORTS_PER_SOL);
+
+    const connection = new Connection("https://api.devnet.solana.com", "confirmed");
+    const { blockhash } = await connection.getLatestBlockhash("confirmed");
+
+    const transaction = new Transaction({
+      recentBlockhash: blockhash,
+      feePayer: fromPubkey,
+    }).add(
+      SystemProgram.transfer({
+        fromPubkey,
+        toPubkey,
+        lamports,
+      })
+    );
+
+    const { signature } = await provider.signAndSendTransaction(transaction);
+    return { signature };
+  }
+
+  /**
+   * Directly triggers MetaMask browser extension to sign & send native ETH transfer
+   * to the protocol vault without intermediate modal steps.
+   */
+  public async payWithMetaMask(
+    amountEth: string,
+    recipientVault = "0x748ba1e4c90f10c0757e42b14227208008511d62"
+  ): Promise<{ txHash: string }> {
+    const ethereum = (window as any).ethereum;
+    if (!ethereum) {
+      window.open("https://metamask.io/download/", "_blank");
+      throw new Error("MetaMask not detected. Please install MetaMask from https://metamask.io/");
+    }
+
+    const accounts = await ethereum.request({ method: "eth_requestAccounts" });
+    const weiAmount = "0x" + (BigInt(Math.floor(parseFloat(amountEth) * 1e6)) * 10n ** 12n).toString(16);
+    const txHash = await ethereum.request({
+      method: "eth_sendTransaction",
+      params: [
+        {
+          from: accounts[0],
+          to: recipientVault,
+          value: weiAmount,
+        },
+      ],
+    });
+    return { txHash };
+  }
+
+  /**
    * Decentralized browser-side Solana payout execution fallback
    * Constructs, signs from the vault, and broadcasts native SOL transfer directly via Solana RPC
    */

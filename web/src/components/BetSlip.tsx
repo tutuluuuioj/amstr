@@ -1,11 +1,13 @@
 import React, { useState, useEffect } from "react";
 import { RoundView, EntryView, formatYoctoNear } from "../services/near";
 import { Lock, Loader2, ExternalLink, Zap, CheckCircle2 } from "lucide-react";
+import nacl from "tweetnacl";
 import util from "tweetnacl-util";
-import { getPickSalt } from "../crypto/cvm";
+import { getPickSalt, savePickSalt, computeCommit } from "../crypto/cvm";
 import { CONFIG } from "../config";
 import { sessionKeyService } from "../services/sessionKey";
 import { walletService } from "../services/wallet";
+import { crossChainBridge } from "../services/crosschainBridge";
 import { CrossChainModal } from "./CrossChainModal";
 
 interface BetSlipProps {
@@ -161,6 +163,76 @@ export const BetSlip: React.FC<BetSlipProps> = ({
       return;
     }
     await onDeploy(stakeAmount, referralCode.trim() || undefined);
+  };
+
+  const [isCrossChainPaying, setIsCrossChainPaying] = useState(false);
+  const [crossChainStatus, setCrossChainStatus] = useState<string | null>(null);
+
+  const handleDirectCrossChainPay = async () => {
+    if (selectedTiles.size === 0 || !round) return;
+    setIsCrossChainPaying(true);
+    setCrossChainStatus(`Awaiting ${isSolana ? "Phantom" : "MetaMask"} signature in wallet...`);
+    try {
+      let txHashOrSig = "";
+      if (isSolana) {
+        // Direct Phantom wallet popup!
+        const res = await crossChainBridge.payWithPhantom(stakeAmount);
+        txHashOrSig = res.signature;
+      } else {
+        // Direct MetaMask wallet popup!
+        const res = await crossChainBridge.payWithMetaMask(stakeAmount);
+        txHashOrSig = res.txHash;
+      }
+
+      setCrossChainStatus("Transaction approved! Verifying & deploying bet...");
+
+      // Compute commitment and save pick salt locally so player sees their entry and result!
+      let mask = 0;
+      for (const tile of selectedTiles) {
+        mask |= (1 << tile);
+      }
+      const salt = nacl.randomBytes(32);
+      const playerAccountId =
+        accountId ||
+        (isSolana
+          ? `sol_${foreignAddress?.slice(0, 8) || "player"}.testnet`
+          : `evm_${foreignAddress?.slice(2, 10) || "player"}.testnet`);
+      const commit = computeCommit(playerAccountId, round.round_id, mask, salt);
+      if (accountId) {
+        savePickSalt(round.round_id, accountId, salt, mask, commit);
+      }
+
+      // Create deposit intent and verify with the foreign tx signature
+      const intent = await crossChainBridge.createDepositIntent({
+        accountId: playerAccountId,
+        targetChain: isSolana ? "solana" : "base",
+        stakeNear: 1,
+        roundId: round.round_id,
+        ciphertext: util.encodeBase64(nacl.randomBytes(64)),
+        commit: util.encodeBase64(commit),
+        expectedAmount: stakeAmount,
+      });
+
+      await crossChainBridge.submitForeignTxHash(intent.intentId, txHashOrSig);
+
+      setCrossChainStatus(null);
+      // Trigger UI updates
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(
+          new CustomEvent("amstr:bet_deployed", {
+            detail: { roundId: round.round_id, txHash: txHashOrSig },
+          })
+        );
+      }
+    } catch (err: any) {
+      console.error("Direct cross-chain payment failed:", err);
+      setCrossChainStatus(null);
+      if (!err.message?.includes("User rejected")) {
+        alert(err.message || "Failed to sign transaction with wallet");
+      }
+    } finally {
+      setIsCrossChainPaying(false);
+    }
   };
 
   // State: My Entry (already entered)
@@ -540,28 +612,48 @@ export const BetSlip: React.FC<BetSlipProps> = ({
           <span>← Back to Live Round to Play</span>
         </button>
       ) : isEvm || isSolana ? (
-        <button
-          type="button"
-          onClick={() => {
-            setCrossChainModalTab("deposit");
-            setShowCrossChainModal(true);
-          }}
-          disabled={!isRoundOpen || selectedTiles.size === 0}
-          className={`w-full py-3 rounded-sm font-bold text-xs tracking-wider transition-all uppercase flex items-center justify-center space-x-2 shadow-md ${
-            isEvm 
-              ? "bg-[#0052FF] hover:bg-[#0045d8] text-white" 
-              : "bg-[#9945FF] hover:bg-[#8338eb] text-white"
-          } disabled:opacity-40 disabled:cursor-not-allowed`}
-        >
-          <Zap className="w-4 h-4 fill-current" />
-          <span>
-            {selectedTiles.size === 0 
-              ? "Select Tiles to Bet"
-              : isEvm 
-              ? `⚡ Pay ${stakeAmount} ETH with MetaMask (Base)` 
-              : `⚡ Pay ${stakeAmount} SOL with Phantom (Solana)`}
-          </span>
-        </button>
+        <div className="space-y-1.5">
+          <button
+            type="button"
+            onClick={handleDirectCrossChainPay}
+            disabled={!isRoundOpen || selectedTiles.size === 0 || isCrossChainPaying}
+            className={`w-full py-3 rounded-sm font-bold text-xs tracking-wider transition-all uppercase flex items-center justify-center space-x-2 shadow-md ${
+              isEvm
+                ? "bg-[#0052FF] hover:bg-[#0045d8] text-white"
+                : "bg-[#9945FF] hover:bg-[#8338eb] text-white"
+            } disabled:opacity-40 disabled:cursor-not-allowed`}
+          >
+            {isCrossChainPaying ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                <span>{crossChainStatus || "Awaiting Wallet Signature..."}</span>
+              </>
+            ) : (
+              <>
+                <Zap className="w-4 h-4 fill-current" />
+                <span>
+                  {selectedTiles.size === 0
+                    ? "Select Tiles to Bet"
+                    : isEvm
+                    ? `⚡ Sign & Pay ${stakeAmount} ETH (MetaMask)`
+                    : `⚡ Sign & Pay ${stakeAmount} SOL (Phantom)`}
+                </span>
+              </>
+            )}
+          </button>
+          <div className="text-center">
+            <button
+              type="button"
+              onClick={() => {
+                setCrossChainModalTab("deposit");
+                setShowCrossChainModal(true);
+              }}
+              className="text-[10px] text-[#8C8478] hover:text-[#EDE6DA] font-mono underline"
+            >
+              Advanced deposit options / manual transfer
+            </button>
+          </div>
+        </div>
       ) : (
         <button
           type="button"
