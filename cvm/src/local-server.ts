@@ -131,10 +131,10 @@ async function ensurePlayerSubaccount(playerAccountId: string, requiredBalanceYo
     acc = await near.account(normalizedId);
     const state = await acc.state();
     const currentBalance = BigInt(state.amount);
-    const buffer = BigInt(utils.format.parseNearAmount("0.05")!);
-    const needed = requiredBalanceYocto + buffer;
+    const minSafeBuffer = BigInt(utils.format.parseNearAmount("0.3")!);
+    const needed = requiredBalanceYocto + minSafeBuffer;
     if (currentBalance < needed) {
-      const topUp = needed - currentBalance;
+      const topUp = BigInt(utils.format.parseNearAmount("0.5")!);
       console.log(`[Local Relayer] Topping up ${normalizedId} with ${utils.format.formatNearAmount(topUp.toString())} NEAR...`);
       await adminAccount.sendMoney(normalizedId, topUp);
     }
@@ -142,7 +142,7 @@ async function ensurePlayerSubaccount(playerAccountId: string, requiredBalanceYo
   } catch (err: any) {
     // If unknown account and subaccount of admin, create it
     if (normalizedId.endsWith(`.${ADMIN_ID}`)) {
-      const buffer = BigInt(utils.format.parseNearAmount("0.08")!);
+      const buffer = BigInt(utils.format.parseNearAmount("0.5")!);
       const initialDeposit = (requiredBalanceYocto + buffer).toString();
       console.log(`[Local Relayer] Creating subaccount on NEAR testnet: ${normalizedId} with ${utils.format.formatNearAmount(initialDeposit)} NEAR...`);
       await adminAccount.createAccount(
