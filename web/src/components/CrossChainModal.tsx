@@ -131,8 +131,6 @@ export const CrossChainModal: React.FC<CrossChainModalProps> = ({
     };
   }, [activeIntent?.intentId, activeIntent?.status, activeIntent?.derivedAddress, selectedChain]);
 
-  if (!isOpen) return null;
-
   const currentAddress =
     selectedChain === "solana"
       ? (derivedAccounts?.solana || "HiBiFJp3n4eoSZfAaY5SDMPxcCecNnoz5FZpqvTZGWDL")
@@ -287,6 +285,8 @@ export const CrossChainModal: React.FC<CrossChainModalProps> = ({
       setIsRequestingPayout(false);
     }
   };
+
+  if (!isOpen) return null;
 
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto bg-black/80 flex items-center justify-center p-4">
