@@ -158,20 +158,55 @@ export class CrossChainBridgeService {
     const isSolana = intent.targetChain === "solana" || txHash.length > 66;
 
     if (isSolana) {
-      // Direct verification via Solana Devnet RPC
-      const res = await fetch("https://api.devnet.solana.com", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          id: 1,
-          method: "getTransaction",
-          params: [txHash, { encoding: "jsonParsed", maxSupportedTransactionVersion: 0 }],
-        }),
-      });
+      let tx: any = null;
+      // Solana Devnet RPC indexer retry loop (up to 15 attempts ~18s) to allow block inclusion & indexing
+      for (let attempt = 0; attempt < 15; attempt++) {
+        try {
+          const res = await fetch("https://api.devnet.solana.com", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              jsonrpc: "2.0",
+              id: 1,
+              method: "getTransaction",
+              params: [txHash, { encoding: "jsonParsed", commitment: "confirmed", maxSupportedTransactionVersion: 0 }],
+            }),
+          });
 
-      const data = await res.json();
-      const tx = data?.result;
+          const data = await res.json();
+          if (data?.result) {
+            tx = data.result;
+            break;
+          }
+        } catch {
+          // Retry
+        }
+
+        // Also check getSignatureStatuses in parallel for fast confirmation
+        try {
+          const statusRes = await fetch("https://api.devnet.solana.com", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              jsonrpc: "2.0",
+              id: 1,
+              method: "getSignatureStatuses",
+              params: [[txHash], { searchTransactionHistory: true }],
+            }),
+          });
+          const statusData = await statusRes.json();
+          const stat = statusData?.result?.value?.[0];
+          if (stat && (stat.confirmationStatus === "confirmed" || stat.confirmationStatus === "finalized") && !stat.err) {
+            tx = { meta: { err: null }, slot: stat.slot };
+            break;
+          }
+        } catch {
+          // Retry
+        }
+
+        await new Promise((r) => setTimeout(r, 1200));
+      }
+
       if (!tx) {
         throw new Error(`Solana transaction ${txHash.slice(0, 12)}... not indexed yet. Please wait a few seconds and retry.`);
       }
@@ -187,21 +222,33 @@ export class CrossChainBridgeService {
       this.saveLocalIntent(intent);
       return intent;
     } else {
-      // Direct verification via Base or Ethereum Sepolia
+      // Direct verification via Base or Ethereum Sepolia with retry loop
       const rpcUrl = intent.targetChain === "ethereum" ? "https://rpc.sepolia.org" : "https://sepolia.base.org";
-      const res = await fetch(rpcUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          id: 1,
-          method: "eth_getTransactionReceipt",
-          params: [txHash],
-        }),
-      });
+      let receipt: any = null;
+      for (let attempt = 0; attempt < 12; attempt++) {
+        try {
+          const res = await fetch(rpcUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              jsonrpc: "2.0",
+              id: 1,
+              method: "eth_getTransactionReceipt",
+              params: [txHash],
+            }),
+          });
 
-      const data = await res.json();
-      const receipt = data?.result;
+          const data = await res.json();
+          if (data?.result) {
+            receipt = data.result;
+            break;
+          }
+        } catch {
+          // Retry
+        }
+        await new Promise((r) => setTimeout(r, 1500));
+      }
+
       if (!receipt) {
         throw new Error(`Transaction ${txHash.slice(0, 10)}... is still pending. Please wait for mining.`);
       }
@@ -313,6 +360,15 @@ export class CrossChainBridgeService {
 
     if (!signature) {
       throw lastError || new Error("Failed to sign transaction with connected Solana wallet.");
+    }
+
+    try {
+      await connection.confirmTransaction(
+        { signature, blockhash, lastValidBlockHeight },
+        "confirmed"
+      );
+    } catch (confErr) {
+      console.warn("confirmTransaction warning (continuing to verification):", confErr);
     }
 
     return { signature };
