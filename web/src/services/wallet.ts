@@ -33,16 +33,28 @@ class WalletService {
 
   public async init(): Promise<WalletContextState> {
     const savedDev = localStorage.getItem("amstr_dev_account");
-    if (savedDev) {
-      this.devAccountId = savedDev;
-    }
     const savedChain = localStorage.getItem("amstr_connected_chain") as any;
+    const savedForeign = localStorage.getItem("amstr_foreign_address");
+
     if (savedChain) {
       this.connectedChain = savedChain;
     }
-    const savedForeign = localStorage.getItem("amstr_foreign_address");
     if (savedForeign) {
       this.foreignAddress = savedForeign;
+    }
+
+    if (savedDev) {
+      this.devAccountId = savedDev;
+      // Auto-migrate legacy subaccount format if needed
+      if (savedDev.startsWith("sol_") && !savedDev.endsWith(".amstr-admin-zxlhcx.testnet")) {
+        const clean = (savedForeign || savedDev).toLowerCase().replace(/[^a-z0-9]/g, "").replace(/^sol/, "").slice(0, 10);
+        this.devAccountId = `sol_${clean || "player"}.amstr-admin-zxlhcx.testnet`;
+        localStorage.setItem("amstr_dev_account", this.devAccountId);
+      } else if (savedDev.startsWith("evm_") && !savedDev.endsWith(".amstr-admin-zxlhcx.testnet")) {
+        const clean = (savedForeign || savedDev).toLowerCase().replace(/^0x/, "").replace(/^evm/, "").replace(/[^a-z0-9]/g, "").slice(0, 10);
+        this.devAccountId = `evm_${clean || "player"}.amstr-admin-zxlhcx.testnet`;
+        localStorage.setItem("amstr_dev_account", this.devAccountId);
+      }
     }
 
     // Auto-verify & fund Passkey account on-chain via official NEAR helper

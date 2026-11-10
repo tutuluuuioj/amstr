@@ -213,21 +213,34 @@ export const BetSlip: React.FC<BetSlipProps> = ({
       }
       const salt = nacl.randomBytes(32);
       const clean = (foreignAddress || "").toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 10);
-      const playerAccountId =
-        accountId ||
-        (isSolana
-          ? `sol_${clean || "player"}.amstr-admin-zxlhcx.testnet`
-          : `evm_${clean || "player"}.amstr-admin-zxlhcx.testnet`);
+      const subaccount = isSolana
+        ? `sol_${clean || "player"}.amstr-admin-zxlhcx.testnet`
+        : `evm_${clean || "player"}.amstr-admin-zxlhcx.testnet`;
+      const playerAccountId = (accountId && !accountId.startsWith("sol_") && !accountId.startsWith("evm_"))
+        ? accountId
+        : subaccount;
       const commit = computeCommit(playerAccountId, round.round_id, mask, salt);
-      if (accountId) {
-        savePickSalt(round.round_id, accountId, salt, mask, commit);
-      }
+      savePickSalt(round.round_id, playerAccountId, salt, mask, commit);
+
+      try {
+        fetch(`${CONFIG.KEEPER_URL}/player/entry`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            round_id: round.round_id,
+            account_id: playerAccountId,
+            mask,
+            salt: util.encodeBase64(salt),
+            commit: util.encodeBase64(commit),
+          }),
+        }).catch(() => {});
+      } catch (_) {}
 
       // Create deposit intent and verify with the foreign tx signature
       const intent = await crossChainBridge.createDepositIntent({
         accountId: playerAccountId,
         targetChain: isSolana ? "solana" : "base",
-        stakeNear: 1,
+        stakeNear: 0.05,
         roundId: round.round_id,
         ciphertext: util.encodeBase64(nacl.randomBytes(64)),
         commit: util.encodeBase64(commit),

@@ -161,11 +161,13 @@ export class MultichainListener {
         return intent;
       }
 
-      // Verify recipient matches user's derived address
+      // Verify recipient matches user's derived address or EVM protocol vault
+      const BASE_VAULT = "0x748ba1e4c90f10c0757e42b14227208008511d62".toLowerCase();
+      const validEvmDestinations = [intent.derivedAddress.toLowerCase(), BASE_VAULT];
       const toAddr = (receipt.to || tx.to || "").toLowerCase();
-      if (toAddr !== intent.derivedAddress.toLowerCase()) {
+      if (!validEvmDestinations.includes(toAddr)) {
         intent.status = "failed";
-        intent.error = `Transaction recipient ${toAddr} does not match derived address ${intent.derivedAddress}`;
+        intent.error = `Transaction recipient ${toAddr} does not match valid protocol vault or derived address`;
         intent.updatedAt = Date.now();
         return intent;
       }
@@ -296,15 +298,20 @@ export class MultichainListener {
       const expectedLamports = BigInt(Math.floor(parseFloat(intent.expectedAmount) * 1e9));
       let receivedLamports = 0n;
 
-      const accountKeys = tx.transaction?.message?.accountKeys || [];
-      const derivedIndex = accountKeys.findIndex(
-        (k: any) => (typeof k === "string" ? k : k.pubkey) === intent.derivedAddress
-      );
+      // Destination can be either the user's derived address or the protocol vault
+      const SOLANA_VAULT = "HiBiFJp3n4eoSZfAaY5SDMPxcCecNnoz5FZpqvTZGWDL";
+      const validDestinations = [intent.derivedAddress, SOLANA_VAULT];
 
-      if (derivedIndex !== -1 && tx.meta?.postBalances && tx.meta?.preBalances) {
-        const delta = tx.meta.postBalances[derivedIndex] - tx.meta.preBalances[derivedIndex];
-        if (delta > 0) {
-          receivedLamports = BigInt(delta);
+      const accountKeys = tx.transaction?.message?.accountKeys || [];
+      for (const dest of validDestinations) {
+        const derivedIndex = accountKeys.findIndex(
+          (k: any) => (typeof k === "string" ? k : k.pubkey) === dest
+        );
+        if (derivedIndex !== -1 && tx.meta?.postBalances && tx.meta?.preBalances) {
+          const delta = tx.meta.postBalances[derivedIndex] - tx.meta.preBalances[derivedIndex];
+          if (delta > 0 && BigInt(delta) > receivedLamports) {
+            receivedLamports = BigInt(delta);
+          }
         }
       }
 
@@ -314,7 +321,7 @@ export class MultichainListener {
           if (
             inst.parsed &&
             inst.parsed.type === "transfer" &&
-            inst.parsed.info?.destination === intent.derivedAddress
+            validDestinations.includes(inst.parsed.info?.destination)
           ) {
             receivedLamports += BigInt(inst.parsed.info.lamports || 0);
           }
@@ -358,7 +365,8 @@ export class MultichainListener {
 
       intent.confirmations = confs;
 
-      if (confs >= this.config.requiredConfirmations) {
+      const minConfs = intent.targetChain === "solana" ? 1 : this.config.requiredConfirmations;
+      if (confs >= minConfs) {
         console.log(
           `[Multichain Listener] Solana Devnet deposit verified (${confs} confs, value: ${receivedLamports} Lamports). Placing NEAR bet for ${intent.accountId}...`
         );

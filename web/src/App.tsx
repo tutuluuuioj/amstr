@@ -28,6 +28,7 @@ import {
   computeCommit,
   encryptClientPick,
   savePickSalt,
+  getPickSalt,
 } from "./crypto/cvm";
 import util from "tweetnacl-util";
 import { CONFIG } from "./config";
@@ -253,6 +254,12 @@ export const App: React.FC = () => {
     fetchHistory();
     pollTeeHealth();
 
+    const handleBetDeployed = () => {
+      fetchLiveData();
+      fetchHistory();
+    };
+    window.addEventListener("amstr:bet_deployed", handleBetDeployed);
+
     let ticks = 0;
     const interval = setInterval(() => {
       fetchLiveData();
@@ -263,7 +270,10 @@ export const App: React.FC = () => {
       }
     }, 4000);
 
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener("amstr:bet_deployed", handleBetDeployed);
+    };
   }, [fetchLiveData, fetchHistory, pollTeeHealth]);
 
   // Deep linking for round inspection & fairness verification modal
@@ -750,7 +760,11 @@ export const App: React.FC = () => {
                 onSelectAll={selectAll}
                 onClear={clearSelection}
                 round={displayedRound}
-                playerMask={playerEntry?.mask ?? null}
+                playerMask={
+                  playerEntry?.mask ??
+                  (displayedRound && accountId ? getPickSalt(displayedRound.round_id, accountId)?.mask : null) ??
+                  null
+                }
                 disabled={displayedRound?.status !== "Open" || !!playerEntry}
                 isViewingPastRound={isViewingPastRound}
               />

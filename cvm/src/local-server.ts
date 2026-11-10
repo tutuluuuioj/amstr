@@ -72,10 +72,28 @@ app.post("/player/entry", (req: Request, res: Response) => {
   res.json({ success: true, saved: key });
 });
 
+// Normalize foreign player account id to a valid NEAR subaccount
+function normalizePlayerAccountId(accId: string): string {
+  if (!accId) return `sol_player.${ADMIN_ID}`;
+  if (accId.startsWith("sol_") && !accId.endsWith(`.${ADMIN_ID}`)) {
+    const clean = accId.replace(/^sol_/, "").replace(/\.testnet$/, "").replace(/[^a-z0-9]/g, "").slice(0, 10);
+    return `sol_${clean || "player"}.${ADMIN_ID}`;
+  }
+  if (accId.startsWith("evm_") && !accId.endsWith(`.${ADMIN_ID}`)) {
+    const clean = accId.replace(/^evm_/, "").replace(/\.testnet$/, "").replace(/[^a-z0-9]/g, "").slice(0, 10);
+    return `evm_${clean || "player"}.${ADMIN_ID}`;
+  }
+  return accId;
+}
+
 // 4. Register deposit intent
 app.post("/multichain/deposit-intent", (req: Request, res: Response) => {
   try {
-    const intent = multichainListener.registerDepositIntent(req.body);
+    const body = { ...req.body };
+    if (body.accountId) {
+      body.accountId = normalizePlayerAccountId(body.accountId);
+    }
+    const intent = multichainListener.registerDepositIntent(body);
     console.log(`[Local Relayer] Registered deposit intent ${intent.intentId} for ${intent.accountId} (${intent.targetChain})`);
     res.json({ success: true, intent });
   } catch (err: any) {
@@ -94,27 +112,40 @@ app.get("/multichain/intent/:intentId", (req: Request, res: Response) => {
 });
 
 // Helper: Ensure subaccount exists on NEAR for the player
-async function ensurePlayerSubaccount(playerAccountId: string): Promise<any> {
+async function ensurePlayerSubaccount(playerAccountId: string, requiredBalanceYocto: bigint): Promise<any> {
+  const normalizedId = normalizePlayerAccountId(playerAccountId);
+  await keyStore.setKey("testnet", normalizedId, adminKeyPair);
+
+  let acc: any;
   try {
-    await keyStore.setKey("testnet", playerAccountId, adminKeyPair);
-    const acc = await near.account(playerAccountId);
-    await acc.state();
+    acc = await near.account(normalizedId);
+    const state = await acc.state();
+    const currentBalance = BigInt(state.amount);
+    const buffer = BigInt(utils.format.parseNearAmount("0.05")!);
+    const needed = requiredBalanceYocto + buffer;
+    if (currentBalance < needed) {
+      const topUp = needed - currentBalance;
+      console.log(`[Local Relayer] Topping up ${normalizedId} with ${utils.format.formatNearAmount(topUp.toString())} NEAR...`);
+      await adminAccount.sendMoney(normalizedId, topUp);
+    }
     return acc;
   } catch (err: any) {
     // If unknown account and subaccount of admin, create it
-    if (playerAccountId.endsWith(`.${ADMIN_ID}`)) {
-      console.log(`[Local Relayer] Creating subaccount on NEAR testnet: ${playerAccountId}...`);
+    if (normalizedId.endsWith(`.${ADMIN_ID}`)) {
+      const buffer = BigInt(utils.format.parseNearAmount("0.08")!);
+      const initialDeposit = (requiredBalanceYocto + buffer).toString();
+      console.log(`[Local Relayer] Creating subaccount on NEAR testnet: ${normalizedId} with ${utils.format.formatNearAmount(initialDeposit)} NEAR...`);
       await adminAccount.createAccount(
-        playerAccountId,
+        normalizedId,
         adminKeyPair.getPublicKey(),
-        BigInt(utils.format.parseNearAmount("0.2")!)
+        BigInt(initialDeposit)
       );
-      await keyStore.setKey("testnet", playerAccountId, adminKeyPair);
-      return await near.account(playerAccountId);
+      await keyStore.setKey("testnet", normalizedId, adminKeyPair);
+      return await near.account(normalizedId);
     }
     // Fallback: register key for accountId
-    await keyStore.setKey("testnet", playerAccountId, adminKeyPair);
-    return await near.account(playerAccountId);
+    await keyStore.setKey("testnet", normalizedId, adminKeyPair);
+    return await near.account(normalizedId);
   }
 }
 
@@ -135,8 +166,8 @@ app.post("/multichain/verify-tx", async (req: Request, res: Response) => {
       const storageYocto = "10000000000000000000000"; // 0.01 NEAR
       const totalDeposit = (BigInt(stakeYocto) + BigInt(storageYocto)).toString();
 
-      // Ensure valid player subaccount
-      const playerAcc = await ensurePlayerSubaccount(intent.accountId);
+      // Ensure valid player subaccount with sufficient balance
+      const playerAcc = await ensurePlayerSubaccount(intent.accountId, BigInt(totalDeposit));
 
       // Deploy bet to the game contract!
       const outcome = await playerAcc.functionCall({
