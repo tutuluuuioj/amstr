@@ -165,34 +165,19 @@ export const BetSlip: React.FC<BetSlipProps> = ({
     await onDeploy(stakeAmount, referralCode.trim() || undefined);
   };
 
+  // Clean up any stale mock keys from localStorage
+  useEffect(() => {
+    try {
+      localStorage.removeItem("amstr_active_crosschain_bet");
+      localStorage.removeItem("amstr_pending_tx_hash");
+    } catch {
+      // ignore
+    }
+  }, []);
+
   const [isCrossChainPaying, setIsCrossChainPaying] = useState(false);
   const [crossChainStatus, setCrossChainStatus] = useState<string | null>(null);
   const [crossChainError, setCrossChainError] = useState<string | null>(null);
-
-  const [crossChainDeployedTx, setCrossChainDeployedTx] = useState<{
-    roundId: number;
-    txHash: string;
-    tiles: number[];
-    stakeAmount: string;
-  } | null>(() => {
-    try {
-      const saved = localStorage.getItem("amstr_active_crosschain_bet");
-      return saved ? JSON.parse(saved) : null;
-    } catch {
-      return null;
-    }
-  });
-
-  const [savedPendingSig, setSavedPendingSig] = useState<string | null>(() => {
-    try {
-      return (
-        localStorage.getItem("amstr_pending_tx_hash") ||
-        "55zar9Z8cTaBiELjyBYbZRA42jHYC4Lq8NJRQHTgBv7xZW4aCfifHeXSC9GHScyW5STtnjvhFWCZFLsQd6cWd6yD"
-      );
-    } catch {
-      return "55zar9Z8cTaBiELjyBYbZRA42jHYC4Lq8NJRQHTgBv7xZW4aCfifHeXSC9GHScyW5STtnjvhFWCZFLsQd6cWd6yD";
-    }
-  });
 
   const solanaWalletName =
     typeof window !== "undefined" && (window as any).solflare
@@ -202,38 +187,28 @@ export const BetSlip: React.FC<BetSlipProps> = ({
       : "Solana";
 
   const handleDirectCrossChainPay = async () => {
-    if (!round) return;
+    if (selectedTiles.size === 0 || !round) return;
     setIsCrossChainPaying(true);
     setCrossChainError(null);
     const activeWalletLabel = isSolana ? solanaWalletName : "MetaMask";
+    setCrossChainStatus(`Awaiting ${activeWalletLabel} signature in wallet...`);
     try {
-      let txHashOrSig = savedPendingSig || "";
-      if (!txHashOrSig) {
-        if (selectedTiles.size === 0) return;
-        setCrossChainStatus(`Awaiting ${activeWalletLabel} signature in wallet...`);
-        if (isSolana) {
-          // Direct Solflare / Phantom wallet popup!
-          const res = await crossChainBridge.payWithSolanaWallet(stakeAmount);
-          txHashOrSig = res.signature;
-        } else {
-          // Direct MetaMask wallet popup!
-          const res = await crossChainBridge.payWithMetaMask(stakeAmount);
-          txHashOrSig = res.txHash;
-        }
-        setSavedPendingSig(txHashOrSig);
-        try {
-          localStorage.setItem("amstr_pending_tx_hash", txHashOrSig);
-        } catch {
-          // ignore
-        }
+      let txHashOrSig = "";
+      if (isSolana) {
+        // Direct Solflare / Phantom wallet popup!
+        const res = await crossChainBridge.payWithSolanaWallet(stakeAmount);
+        txHashOrSig = res.signature;
+      } else {
+        // Direct MetaMask wallet popup!
+        const res = await crossChainBridge.payWithMetaMask(stakeAmount);
+        txHashOrSig = res.txHash;
       }
 
-      setCrossChainStatus("Verifying on-chain transaction & deploying bet...");
+      setCrossChainStatus("Transaction confirmed on-chain! Verifying & deploying bet...");
 
       // Compute commitment and save pick salt locally so player sees their entry and result!
       let mask = 0;
-      const tilesArray = selectedTiles.size > 0 ? Array.from(selectedTiles) : [7, 11, 22];
-      for (const tile of tilesArray) {
+      for (const tile of selectedTiles) {
         mask |= (1 << tile);
       }
       const salt = nacl.randomBytes(32);
@@ -255,31 +230,10 @@ export const BetSlip: React.FC<BetSlipProps> = ({
         roundId: round.round_id,
         ciphertext: util.encodeBase64(nacl.randomBytes(64)),
         commit: util.encodeBase64(commit),
-        expectedAmount: stakeAmount || "0.05",
+        expectedAmount: stakeAmount,
       });
 
       await crossChainBridge.submitForeignTxHash(intent.intentId, txHashOrSig);
-
-      // Successfully verified and deployed!
-      try {
-        localStorage.removeItem("amstr_pending_tx_hash");
-      } catch {
-        // ignore
-      }
-      setSavedPendingSig(null);
-
-      const deployedData = {
-        roundId: round.round_id,
-        txHash: txHashOrSig,
-        tiles: tilesArray,
-        stakeAmount: stakeAmount || "0.05",
-      };
-      setCrossChainDeployedTx(deployedData);
-      try {
-        localStorage.setItem("amstr_active_crosschain_bet", JSON.stringify(deployedData));
-      } catch {
-        // ignore
-      }
 
       setCrossChainStatus(null);
       // Trigger UI updates
@@ -300,67 +254,6 @@ export const BetSlip: React.FC<BetSlipProps> = ({
       setIsCrossChainPaying(false);
     }
   };
-
-  // State: Cross-Chain Deployed Entry (funded via Solana or EVM)
-  if (crossChainDeployedTx && crossChainDeployedTx.roundId === round?.round_id && !entry) {
-    return (
-      <div className="bg-[#1A1815] border border-[#5FA88A]/40 rounded-sm p-5 space-y-4">
-        <div className="flex items-center justify-between pb-3 border-b border-[#2A2620]">
-          <h3 className="font-fraunces text-base font-bold text-[#EDE6DA]">My Entry</h3>
-          <span className="font-mono text-xs text-[#5FA88A] bg-[#5FA88A]/10 px-2 py-0.5 rounded-sm flex items-center space-x-1">
-            <span className="w-1.5 h-1.5 rounded-full bg-[#5FA88A] animate-pulse"></span>
-            <span>Bet Deployed</span>
-          </span>
-        </div>
-
-        <div className="space-y-3 pt-1">
-          <div className="p-3 bg-[#5FA88A]/10 border border-[#5FA88A]/30 rounded-sm space-y-1">
-            <div className="text-xs font-bold text-[#5FA88A] uppercase tracking-wider">
-              {isSolana ? "⚡ Solana Devnet Funded" : "⚡ Base Sepolia Funded"}
-            </div>
-            <div className="font-mono text-[11px] text-[#EDE6DA] truncate">
-              Tx: {crossChainDeployedTx.txHash.slice(0, 16)}...{crossChainDeployedTx.txHash.slice(-8)}
-            </div>
-          </div>
-
-          <div className="space-y-1.5 p-3 bg-[#0E0D0B] border border-[#2A2620] rounded-sm text-xs font-mono">
-            <div className="flex justify-between text-[#8C8478]">
-              <span>Selected Tiles:</span>
-              <span className="text-[#EDE6DA] font-bold">
-                {crossChainDeployedTx.tiles.map((t) => `#${t}`).join(", ")}
-              </span>
-            </div>
-            <div className="flex justify-between text-[#8C8478]">
-              <span>Stake Paid:</span>
-              <span className="text-[#EDE6DA]">
-                {crossChainDeployedTx.stakeAmount} {isSolana ? "SOL" : "ETH"}
-              </span>
-            </div>
-            <div className="flex justify-between text-[#8C8478]">
-              <span>Picks:</span>
-              <span className="text-[#C8763A] tracking-widest">••••••••</span>
-            </div>
-          </div>
-
-          <div className="text-[11px] text-[#8C8478] leading-tight">
-            Picks are sealed and funded. When this round resolves, your payout will route directly to your connected wallet!
-          </div>
-
-          {isSolana && (
-            <a
-              href={`https://explorer.solana.com/tx/${crossChainDeployedTx.txHash}?cluster=devnet`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="w-full py-2 rounded-sm bg-[#2A2620] hover:bg-[#3A3630] text-[#EDE6DA] text-xs font-mono transition-colors flex items-center justify-center space-x-1.5"
-            >
-              <span>View On Solana Explorer</span>
-              <ExternalLink className="w-3 h-3 ml-1" />
-            </a>
-          )}
-        </div>
-      </div>
-    );
-  }
 
   // State: My Entry (already entered)
   if (entry) {
@@ -755,11 +648,6 @@ export const BetSlip: React.FC<BetSlipProps> = ({
                 <Loader2 className="w-4 h-4 animate-spin" />
                 <span>{crossChainStatus || "Awaiting Wallet Signature..."}</span>
               </>
-            ) : savedPendingSig ? (
-              <>
-                <Zap className="w-4 h-4 fill-current text-green-300" />
-                <span>⚡ Verify & Complete Bet ({stakeAmount || "0.05"} SOL Paid)</span>
-              </>
             ) : (
               <>
                 <Zap className="w-4 h-4 fill-current" />
@@ -773,23 +661,6 @@ export const BetSlip: React.FC<BetSlipProps> = ({
               </>
             )}
           </button>
-          {savedPendingSig && (
-            <div className="flex justify-between items-center text-[10px] font-mono text-[#8C8478] px-1">
-              <span>Detected on Devnet: {savedPendingSig.slice(0, 10)}...</span>
-              <button
-                type="button"
-                onClick={() => {
-                  try {
-                    localStorage.removeItem("amstr_pending_tx_hash");
-                  } catch {}
-                  setSavedPendingSig(null);
-                }}
-                className="text-red-400 hover:underline"
-              >
-                Clear / New Tx
-              </button>
-            </div>
-          )}
           {crossChainError && (
             <div className="p-2 rounded-sm bg-red-950/40 border border-red-800/60 text-red-200 text-xs font-mono break-words">
               {crossChainError}
