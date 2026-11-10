@@ -167,16 +167,26 @@ export const BetSlip: React.FC<BetSlipProps> = ({
 
   const [isCrossChainPaying, setIsCrossChainPaying] = useState(false);
   const [crossChainStatus, setCrossChainStatus] = useState<string | null>(null);
+  const [crossChainError, setCrossChainError] = useState<string | null>(null);
+
+  const solanaWalletName =
+    typeof window !== "undefined" && (window as any).solflare
+      ? "Solflare"
+      : typeof window !== "undefined" && ((window as any).solana?.isPhantom || (window as any).phantom?.solana)
+      ? "Phantom"
+      : "Solana";
 
   const handleDirectCrossChainPay = async () => {
     if (selectedTiles.size === 0 || !round) return;
     setIsCrossChainPaying(true);
-    setCrossChainStatus(`Awaiting ${isSolana ? "Phantom" : "MetaMask"} signature in wallet...`);
+    setCrossChainError(null);
+    const activeWalletLabel = isSolana ? solanaWalletName : "MetaMask";
+    setCrossChainStatus(`Awaiting ${activeWalletLabel} signature in wallet...`);
     try {
       let txHashOrSig = "";
       if (isSolana) {
-        // Direct Phantom wallet popup!
-        const res = await crossChainBridge.payWithPhantom(stakeAmount);
+        // Direct Solflare / Phantom wallet popup!
+        const res = await crossChainBridge.payWithSolanaWallet(stakeAmount);
         txHashOrSig = res.signature;
       } else {
         // Direct MetaMask wallet popup!
@@ -228,7 +238,7 @@ export const BetSlip: React.FC<BetSlipProps> = ({
       console.error("Direct cross-chain payment failed:", err);
       setCrossChainStatus(null);
       if (!err.message?.includes("User rejected")) {
-        alert(err.message || "Failed to sign transaction with wallet");
+        setCrossChainError(err.message || "Failed to sign transaction with wallet");
       }
     } finally {
       setIsCrossChainPaying(false);
@@ -636,11 +646,16 @@ export const BetSlip: React.FC<BetSlipProps> = ({
                     ? "Select Tiles to Bet"
                     : isEvm
                     ? `⚡ Sign & Pay ${stakeAmount} ETH (MetaMask)`
-                    : `⚡ Sign & Pay ${stakeAmount} SOL (Phantom)`}
+                    : `⚡ Sign & Pay ${stakeAmount} SOL (${solanaWalletName})`}
                 </span>
               </>
             )}
           </button>
+          {crossChainError && (
+            <div className="p-2 rounded-sm bg-red-950/40 border border-red-800/60 text-red-200 text-xs font-mono break-words">
+              {crossChainError}
+            </div>
+          )}
           <div className="text-center">
             <button
               type="button"

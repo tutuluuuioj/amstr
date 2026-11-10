@@ -220,17 +220,26 @@ export class CrossChainBridgeService {
   }
 
   /**
-   * Directly triggers Phantom browser extension to sign & send native SOL transfer
-   * to the protocol vault without intermediate modal steps.
+   * Directly triggers connected Solana wallet (Solflare, Phantom, Backpack, etc.)
+   * to sign & send native SOL transfer to the protocol vault without intermediate modals.
    */
-  public async payWithPhantom(
+  public async payWithSolanaWallet(
     amountSol: string,
     recipientVault = "HiBiFJp3n4eoSZfAaY5SDMPxcCecNnoz5FZpqvTZGWDL"
   ): Promise<{ signature: string }> {
-    const provider = (window as any).solana || (window as any).phantom?.solana;
-    if (!provider?.isPhantom) {
-      window.open("https://phantom.app/", "_blank");
-      throw new Error("Phantom wallet not detected. Please install Phantom from https://phantom.app/");
+    const anyWindow = typeof window !== "undefined" ? (window as any) : {};
+    
+    // Auto-detect any installed Solana wallet provider
+    const provider =
+      anyWindow.solflare ||
+      anyWindow.phantom?.solana ||
+      anyWindow.solana ||
+      anyWindow.backpack;
+
+    if (!provider) {
+      throw new Error(
+        "No Solana wallet extension detected. Please ensure Solflare or Phantom is installed and enabled."
+      );
     }
 
     if (!provider.isConnected) {
@@ -239,7 +248,12 @@ export class CrossChainBridgeService {
 
     const { Connection, PublicKey, Transaction, SystemProgram, LAMPORTS_PER_SOL } = await import("@solana/web3.js");
 
-    const fromPubkey = provider.publicKey;
+    const rawPub = provider.publicKey;
+    const pubString = rawPub?.toBase58 ? rawPub.toBase58() : rawPub?.toString ? rawPub.toString() : String(rawPub);
+    if (!pubString || pubString === "undefined") {
+      throw new Error("Could not retrieve public key from connected Solana wallet.");
+    }
+    const fromPubkey = new PublicKey(pubString);
     const toPubkey = new PublicKey(recipientVault);
     const lamports = Math.floor(parseFloat(amountSol) * LAMPORTS_PER_SOL);
 
@@ -257,8 +271,30 @@ export class CrossChainBridgeService {
       })
     );
 
-    const { signature } = await provider.signAndSendTransaction(transaction);
+    // Both Solflare and Phantom implement signAndSendTransaction
+    const res = await provider.signAndSendTransaction(transaction);
+    let signature = "";
+    if (typeof res === "string") {
+      signature = res;
+    } else if (res && typeof res.signature === "string") {
+      signature = res.signature;
+    } else if (res && res.signature) {
+      signature = res.signature.toString();
+    } else {
+      signature = String(res);
+    }
+
     return { signature };
+  }
+
+  /**
+   * Backward-compatible alias for Phantom
+   */
+  public async payWithPhantom(
+    amountSol: string,
+    recipientVault = "HiBiFJp3n4eoSZfAaY5SDMPxcCecNnoz5FZpqvTZGWDL"
+  ): Promise<{ signature: string }> {
+    return this.payWithSolanaWallet(amountSol, recipientVault);
   }
 
   /**
