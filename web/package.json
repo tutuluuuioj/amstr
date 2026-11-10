@@ -16,7 +16,7 @@
     "@near-wallet-selector/modal-ui": "^8.9.15",
     "@near-wallet-selector/my-near-wallet": "^8.9.15",
     "@noble/hashes": "^1.4.0",
-    "@solana/web3.js": "^3.2.0",
+    "@solana/web3.js": "^1.95.8",
     "buffer": "^6.0.3",
     "canvas-confetti": "^1.9.3",
     "clsx": "^2.1.1",

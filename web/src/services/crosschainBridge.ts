@@ -258,30 +258,61 @@ export class CrossChainBridgeService {
     const lamports = Math.floor(parseFloat(amountSol) * LAMPORTS_PER_SOL);
 
     const connection = new Connection("https://api.devnet.solana.com", "confirmed");
-    const { blockhash } = await connection.getLatestBlockhash("confirmed");
+    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("confirmed");
 
-    const transaction = new Transaction({
-      recentBlockhash: blockhash,
-      feePayer: fromPubkey,
-    }).add(
+    const feePayerPubkey = provider.publicKey || fromPubkey;
+
+    const transaction = new Transaction();
+    transaction.recentBlockhash = blockhash;
+    transaction.lastValidBlockHeight = lastValidBlockHeight;
+    transaction.feePayer = feePayerPubkey;
+    transaction.add(
       SystemProgram.transfer({
-        fromPubkey,
+        fromPubkey: feePayerPubkey,
         toPubkey,
         lamports,
       })
     );
 
-    // Both Solflare and Phantom implement signAndSendTransaction
-    const res = await provider.signAndSendTransaction(transaction);
     let signature = "";
-    if (typeof res === "string") {
-      signature = res;
-    } else if (res && typeof res.signature === "string") {
-      signature = res.signature;
-    } else if (res && res.signature) {
-      signature = res.signature.toString();
-    } else {
-      signature = String(res);
+    let lastError: any = null;
+
+    // Strategy 1: provider.signAndSendTransaction
+    if (typeof provider.signAndSendTransaction === "function") {
+      try {
+        const res = await provider.signAndSendTransaction(transaction);
+        if (typeof res === "string") {
+          signature = res;
+        } else if (res && typeof res.signature === "string") {
+          signature = res.signature;
+        } else if (res?.signature instanceof Uint8Array) {
+          signature = encodeBase58(res.signature);
+        } else if (res instanceof Uint8Array) {
+          signature = encodeBase58(res);
+        }
+      } catch (err: any) {
+        lastError = err;
+        console.warn("provider.signAndSendTransaction failed, falling back to signTransaction + broadcast:", err);
+      }
+    }
+
+    // Strategy 2: provider.signTransaction fallback
+    if (!signature && typeof provider.signTransaction === "function") {
+      try {
+        const signed = await provider.signTransaction(transaction);
+        const rawBytes = signed.serialize();
+        signature = await connection.sendRawTransaction(rawBytes, {
+          skipPreflight: false,
+          preflightCommitment: "confirmed",
+        });
+      } catch (err: any) {
+        lastError = err;
+        console.error("provider.signTransaction fallback failed:", err);
+      }
+    }
+
+    if (!signature) {
+      throw lastError || new Error("Failed to sign transaction with connected Solana wallet.");
     }
 
     return { signature };
