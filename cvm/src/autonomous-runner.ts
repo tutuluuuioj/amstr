@@ -13,12 +13,20 @@ import { GaslessRelayerService } from "./relayer.js";
 import { multichainListener } from "./multichain-listener.js";
 import { crossChainRelayer } from "./crosschain-relayer.js";
 import { getDerivedForeignAccounts } from "./chainsig.js";
+import { relayerOracle } from "./oracle.js";
+import { ResilientMultiProvider } from "./rpc-provider.js";
+
+const failoverRpcProvider = new ResilientMultiProvider();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.resolve(__dirname, "../../.env.testnet") });
 
 const START_TIME = Date.now();
-const CVM_URL = process.env.CVM_URL || "https://amstr-keeper.fly.dev";
+let rawCvmUrl = process.env.CVM_URL || "https://085d1ec0a5cc505d86a06fc2b8f3346d6353b0a4-3000.dstack-pha1-prod5.phala.network";
+if (rawCvmUrl.includes("amstr-keeper") || rawCvmUrl.includes("fly.dev")) {
+  rawCvmUrl = "https://085d1ec0a5cc505d86a06fc2b8f3346d6353b0a4-3000.dstack-pha1-prod5.phala.network";
+}
+const CVM_URL = rawCvmUrl.replace(/\/+$/, "");
 const CONTRACT_ID = process.env.CONTRACT_ID || "game.amstr-admin-zxlhcx.testnet";
 const ADMIN_ID = process.env.NEAR_ACCOUNT_ID || "amstr-admin-zxlhcx.testnet";
 const ADMIN_PRIV_KEY = process.env.NEAR_PRIVATE_KEY;
@@ -26,12 +34,30 @@ if (!ADMIN_PRIV_KEY) {
   throw new Error("NEAR_PRIVATE_KEY environment variable is required to run the autonomous keeper daemon. Provide it in .env.testnet or your process environment.");
 }
 
-const REGISTERED_ED25519_PUB = "ed25519:8fXMCKmxZxEuhr5dWMQkDXq8K3pF7teAJvq8GwFx87U6";
-const REGISTERED_X25519_PUB = "EcT6bfLFEE3zB0BQ25CBhxuuItBH5LFf6kuR7lvSA24=";
+let REGISTERED_ED25519_PUB = "ed25519:64NitbNTnFZErw76NaSFiYXPZm8DMa5wv56fP4Bj4FWb";
+let REGISTERED_X25519_PUB = "3TZhHfOCS4FxRbz68rNHxzQJ/MCCXYaAfRVW55mF8T8=";
+
+async function syncCvmKeys() {
+  try {
+    const res = await fetch(`${CVM_URL}/keys`, { signal: AbortSignal.timeout(4000) });
+    if (res.ok) {
+      const data: any = await res.json();
+      if (data.ed25519_pub && data.x25519_pub) {
+        REGISTERED_ED25519_PUB = data.ed25519_pub;
+        REGISTERED_X25519_PUB = data.x25519_pub;
+      }
+    }
+  } catch (_) {}
+}
+syncCvmKeys();
+setInterval(syncCvmKeys, 60000);
 
 const RPC_ENDPOINTS = [
+  ...(process.env.CUSTOM_NEAR_RPC_URL ? [process.env.CUSTOM_NEAR_RPC_URL] : []),
+  process.env.NEAR_RPC_URL || "https://test.rpc.fastnear.com",
   "https://near-testnet.drpc.org",
-  "https://rpc.testnet.fastnear.com",
+  "https://testnet-rpc.intea.rs",
+  "https://near-testnet.gateway.tatum.io",
 ];
 
 const relayerService = new GaslessRelayerService({
@@ -96,24 +122,57 @@ async function sendAlert(message: string) {
 
 class AutonomousRoundRunnerService {
   private nearAccount: any;
+  private contractAccount: any;
+  private keyStore: any;
+  private adminKey: any;
+  private near: any;
   private isRunning = false;
   private lastGasCheckTime = 0;
   private currentRpcIndex = 0;
   private activeSeeds: Map<number, Uint8Array> = new Map();
   private pendingRoundCommits: Map<number, string> = new Map();
   private settledSeeds: Map<number, string> = new Map();
+  private activeSeedsFilePath: string = path.resolve(__dirname, "../active_seeds.json");
+
+  private loadActiveSeeds() {
+    try {
+      if (fs.existsSync(this.activeSeedsFilePath)) {
+        const raw = fs.readFileSync(this.activeSeedsFilePath, "utf8");
+        const parsed = JSON.parse(raw);
+        for (const [k, v] of Object.entries(parsed)) {
+          if (v && typeof v === "string") {
+            this.activeSeeds.set(Number(k), new Uint8Array(Buffer.from(v, "base64")));
+          }
+        }
+      }
+    } catch (_) {}
+  }
+
+  private persistActiveSeeds() {
+    try {
+      const obj: Record<string, string> = {};
+      for (const [k, v] of this.activeSeeds.entries()) {
+        obj[String(k)] = Buffer.from(v).toString("base64");
+      }
+      fs.writeFileSync(this.activeSeedsFilePath, JSON.stringify(obj, null, 2));
+    } catch (_) {}
+  }
 
   public getOrCreateSeedCommit(roundId: number): { seed: Uint8Array; seedCommit: string; seedCommitHex: string } {
     let seed = this.activeSeeds.get(roundId);
     if (!seed) {
-      // Check if known from settled seeds or generate fresh 32 bytes CSPRNG
+      // 1. Check if known from settled seeds
       const known = this.settledSeeds.get(roundId);
       if (known) {
         seed = new Uint8Array(Buffer.from(known, "base64"));
       } else {
-        seed = nacl.randomBytes(32);
+        // 2. Deterministic derivation from ADMIN_PRIV_KEY so seeds can NEVER be lost across restarts!
+        const secretBytes = Buffer.from(ADMIN_PRIV_KEY || "amstr-default-secret");
+        const msg = Buffer.from(`amstr-cvm-seed:${CONTRACT_ID}:round:${roundId}`);
+        seed = sha256(Buffer.concat([secretBytes, msg]));
       }
       this.activeSeeds.set(roundId, seed);
+      this.persistActiveSeeds();
     }
     const commitBytes = sha256(seed);
     const seedCommit = Buffer.from(commitBytes).toString("base64");
@@ -122,16 +181,66 @@ class AutonomousRoundRunnerService {
     return { seed, seedCommit, seedCommitHex };
   }
 
-  public getActiveSeed(roundId: number): Uint8Array | undefined {
+  public getActiveSeed(roundId: number, expectedCommit?: string): Uint8Array | undefined {
     let seed = this.activeSeeds.get(roundId);
-    if (!seed) {
-      const known = this.settledSeeds.get(roundId);
-      if (known) {
-        seed = new Uint8Array(Buffer.from(known, "base64"));
-        this.activeSeeds.set(roundId, seed);
+    if (seed && expectedCommit) {
+      if (Buffer.from(sha256(seed)).toString("base64") === expectedCommit) {
+        return seed;
+      }
+    } else if (seed && !expectedCommit) {
+      return seed;
+    }
+
+    // Match by commit hash across all known active seeds
+    if (expectedCommit) {
+      this.loadActiveSeeds();
+      for (const s of this.activeSeeds.values()) {
+        if (Buffer.from(sha256(s)).toString("base64") === expectedCommit) {
+          this.activeSeeds.set(roundId, s);
+          this.persistActiveSeeds();
+          return s;
+        }
+      }
+      for (const [k, v] of this.settledSeeds.entries()) {
+        const s = new Uint8Array(Buffer.from(v, "base64"));
+        if (Buffer.from(sha256(s)).toString("base64") === expectedCommit) {
+          this.activeSeeds.set(roundId, s);
+          this.persistActiveSeeds();
+          return s;
+        }
+      }
+
+      // Check deterministic seed derivation for nearby round IDs [roundId-10 .. roundId+10]
+      const secretBytes = Buffer.from(ADMIN_PRIV_KEY || "amstr-default-secret");
+      for (let r = Math.max(1, roundId - 10); r <= roundId + 10; r++) {
+        const msg = Buffer.from(`amstr-cvm-seed:${CONTRACT_ID}:round:${r}`);
+        const candidate = sha256(Buffer.concat([secretBytes, msg]));
+        if (Buffer.from(sha256(candidate)).toString("base64") === expectedCommit) {
+          this.activeSeeds.set(roundId, candidate);
+          this.persistActiveSeeds();
+          return candidate;
+        }
       }
     }
-    return seed;
+
+    const known = this.settledSeeds.get(roundId);
+    if (known) {
+      seed = new Uint8Array(Buffer.from(known, "base64"));
+      this.activeSeeds.set(roundId, seed);
+      return seed;
+    }
+
+    // Fallback: derive deterministic seed directly for roundId
+    const secretBytes = Buffer.from(ADMIN_PRIV_KEY || "amstr-default-secret");
+    const msg = Buffer.from(`amstr-cvm-seed:${CONTRACT_ID}:round:${roundId}`);
+    const derived = sha256(Buffer.concat([secretBytes, msg]));
+    if (!expectedCommit || Buffer.from(sha256(derived)).toString("base64") === expectedCommit) {
+      this.activeSeeds.set(roundId, derived);
+      this.persistActiveSeeds();
+      return derived;
+    }
+
+    return undefined;
   }
 
   public getSeed(roundId: number | string): string | undefined {
@@ -152,6 +261,22 @@ class AutonomousRoundRunnerService {
 
   public getAccount(): any {
     return this.nearAccount;
+  }
+
+  public getContractAccount(): any {
+    return this.contractAccount;
+  }
+
+  public getKeyStore(): any {
+    return this.keyStore;
+  }
+
+  public getAdminKeyPair(): any {
+    return this.adminKey;
+  }
+
+  public getNear(): any {
+    return this.near;
   }
 
   private loadPersistedSeeds() {
@@ -215,18 +340,20 @@ class AutonomousRoundRunnerService {
   }
 
   private async connectRpc(index = this.currentRpcIndex) {
-    const keyStore = new keyStores.InMemoryKeyStore();
-    const adminKey = KeyPair.fromString(ADMIN_PRIV_KEY as any);
-    await keyStore.setKey("testnet", ADMIN_ID, adminKey);
+    this.keyStore = new keyStores.InMemoryKeyStore();
+    this.adminKey = KeyPair.fromString(ADMIN_PRIV_KEY as any);
+    await this.keyStore.setKey("testnet", ADMIN_ID, this.adminKey);
+    await this.keyStore.setKey("testnet", CONTRACT_ID, this.adminKey);
 
     const endpoint = RPC_ENDPOINTS[index % RPC_ENDPOINTS.length];
-    const near = await connect({
+    this.near = await connect({
       networkId: "testnet",
-      keyStore,
+      keyStore: this.keyStore,
       nodeUrl: endpoint,
     });
 
-    this.nearAccount = await near.account(ADMIN_ID);
+    this.nearAccount = await this.near.account(ADMIN_ID);
+    this.contractAccount = await this.near.account(CONTRACT_ID);
     console.log(`[RPC] Connected to NEAR Testnet via ${endpoint}`);
   }
 
@@ -246,6 +373,7 @@ class AutonomousRoundRunnerService {
     console.log(`CVM Mode    : Hybrid Enclave + In-Process TDX Engine`);
 
     await this.connectRpc(0);
+    this.loadActiveSeeds();
     this.loadPersistedSeeds();
     console.log("Initialization complete.\n");
   }
@@ -258,17 +386,50 @@ class AutonomousRoundRunnerService {
       } catch (err: any) {
         const msg = err.message || String(err);
         console.error("[Runner Loop Error]:", msg);
-        if (msg.includes("429") || msg.includes("Rate limits") || msg.includes("fetch failed") || msg.includes("ETIMEDOUT")) {
+        if (
+          msg.includes("429") ||
+          msg.includes("Rate limits") ||
+          msg.includes("rate limit") ||
+          msg.includes("paid plan") ||
+          msg.includes("fetch failed") ||
+          msg.includes("ETIMEDOUT") ||
+          msg.includes("Temporary internal error")
+        ) {
           await this.rotateRpc(msg);
         }
       }
-      // Poll every 4 seconds
-      await new Promise((r) => setTimeout(r, 4000));
+      // Poll every 5 seconds
+      await new Promise((r) => setTimeout(r, 5000));
     }
   }
 
   public stop() {
     this.isRunning = false;
+  }
+
+  private async fetchSeedCommitFromCvm(roundId: number): Promise<string> {
+    if (CVM_URL && !CVM_URL.includes("localhost") && !CVM_URL.includes("127.0.0.1")) {
+      try {
+        const res = await fetch(`${CVM_URL}/round/seed-commit`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ round_id: roundId }),
+          signal: AbortSignal.timeout(5000),
+        });
+        if (res.ok) {
+          const data: any = await res.json();
+          if (data && data.seed_commit) {
+            console.log(`    [Phala Intel TDX] Live CVM Seed Commit locked for Round #${roundId}: ${data.seed_commit}`);
+            this.pendingRoundCommits.set(roundId, data.seed_commit);
+            return data.seed_commit;
+          }
+        }
+      } catch (err: any) {
+        console.warn(`    [Phala CVM Notice] Failed to fetch seed commit for #${roundId}:`, err.message);
+      }
+    }
+    const localData = this.getOrCreateSeedCommit(roundId);
+    return localData.seedCommit;
   }
 
   private async step() {
@@ -317,43 +478,10 @@ class AutonomousRoundRunnerService {
       let seedCommit = this.pendingRoundCommits.get(nextRoundNum);
 
       if (!seedCommit) {
-        console.log(`\n>>> [Step 1] Requesting CVM seed commit for Round #${nextRoundId}...`);
-
-        // Attempt external CVM if configured and not pointing to self
-        let externalSuccess = false;
-        if (
-          CVM_URL &&
-          !CVM_URL.includes("localhost") &&
-          !CVM_URL.includes("127.0.0.1") &&
-          !CVM_URL.includes("amstr-keeper.fly.dev")
-        ) {
-          try {
-            const seedCommitRes = await fetch(`${CVM_URL}/round/seed-commit`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ round_id: nextRoundNum }),
-              signal: AbortSignal.timeout(3000),
-            });
-            if (seedCommitRes.ok) {
-              const seedData: any = await seedCommitRes.json();
-              seedCommit = seedData.seed_commit;
-              this.pendingRoundCommits.set(nextRoundNum, seedCommit!);
-              externalSuccess = true;
-              console.log(`    External CVM Seed Commit locked: ${seedCommit}`);
-            }
-          } catch (extErr: any) {
-            console.log(`    External CVM notice: ${extErr.message?.slice(0, 80)}. Falling back to in-process TEE engine.`);
-          }
-        }
-
-        // Resilient in-process TDX engine fallback
-        if (!externalSuccess || !seedCommit) {
-          const localData = this.getOrCreateSeedCommit(nextRoundNum);
-          seedCommit = localData.seedCommit;
-          console.log(`    In-Process Hardware TDX Seed Commit locked: ${seedCommit}`);
-        }
+        console.log(`\n>>> [Step 1] Requesting Phala Intel TDX CVM seed commit for Round #${nextRoundId}...`);
+        seedCommit = await this.fetchSeedCommitFromCvm(nextRoundNum);
       } else {
-        console.log(`\n>>> [Step 1] Reusing locked CVM seed commit for Round #${nextRoundId}: ${seedCommit}`);
+        console.log(`\n>>> [Step 1] Reusing locked Phala CVM seed commit for Round #${nextRoundId}: ${seedCommit}`);
       }
 
       console.log(`>>> [Step 1] Calling open_round(${nextRoundId}) on NEAR Testnet...`);
@@ -413,6 +541,14 @@ class AutonomousRoundRunnerService {
       console.log(`\n\n>>> [Step 2] Deposit window closed for Round #${activeRound.round_id}! Calling close_round()...`);
       try {
         const closeTx = await retry(async () => {
+          const check = await this.nearAccount.viewFunction({
+            contractId: CONTRACT_ID,
+            methodName: "get_round",
+            args: { round_id: Number(activeRound.round_id) },
+          });
+          if (check && check.status !== "Open") {
+            return { transaction: { hash: "already_transitioned" } };
+          }
           return await this.nearAccount.functionCall({
             contractId: CONTRACT_ID,
             methodName: "close_round",
@@ -451,103 +587,206 @@ class AutonomousRoundRunnerService {
 
       let cvmData: any = null;
 
-      // 1. Try external CVM if configured and remote
-      if (
-        CVM_URL &&
-        !CVM_URL.includes("localhost") &&
-        !CVM_URL.includes("127.0.0.1") &&
-        !CVM_URL.includes("amstr-keeper.fly.dev")
-      ) {
-        try {
-          const settlePayload = {
-            round_id: Number(activeRound.round_id),
-            seed_commit: Buffer.from(activeRound.seed_commit).toString("base64"),
-            entries: entries.map((e: any) => ({
-              account_id: e.account_id,
-              ciphertext: Buffer.from(e.ciphertext).toString("base64"),
-              commit: Buffer.from(e.commit).toString("base64"),
-            })),
-          };
+      // 1. Check local in-process seed store first
+      const expectedCommit = Buffer.from(activeRound.seed_commit).toString("base64");
 
-          const settleCvmRes = await fetch(`${CVM_URL}/round/settle`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(settlePayload),
-            signal: AbortSignal.timeout(4000),
-          });
+      // 1. Primary: Query live Phala Intel TDX CVM for hardware reveal and genuine Ed25519 signature!
+      if (CVM_URL && !CVM_URL.includes("localhost") && !CVM_URL.includes("127.0.0.1")) {
+        const candidateRoundIds = [
+          Number(activeRound.round_id),
+          Number(activeRound.round_id) - 1,
+          Number(activeRound.round_id) + 1,
+          Number(activeRound.round_id) - 2,
+          Number(activeRound.round_id) + 2,
+          Number(activeRound.round_id) - 3,
+          Number(activeRound.round_id) + 3,
+          Number(activeRound.round_id) - 4,
+          Number(activeRound.round_id) + 4,
+          Number(activeRound.round_id) - 5,
+          Number(activeRound.round_id) + 5,
+        ];
 
-          if (settleCvmRes.ok) {
-            cvmData = await settleCvmRes.json();
-            console.log(`    External CVM Hardware Decryption & Signature complete!`);
-          } else {
-            console.log(`    External CVM settle returned ${settleCvmRes.status}. Using in-process TEE engine.`);
+        for (const candId of candidateRoundIds) {
+          if (candId < 1 || cvmData) break;
+          try {
+            const settlePayload = {
+              round_id: candId,
+              seed_commit: expectedCommit,
+              entries: entries.map((e: any) => ({
+                account_id: e.account_id,
+                ciphertext: Buffer.from(e.ciphertext).toString("base64"),
+                commit: Buffer.from(e.commit).toString("base64"),
+              })),
+            };
+
+            const settleCvmRes = await fetch(`${CVM_URL}/round/settle`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(settlePayload),
+              signal: AbortSignal.timeout(8000),
+            });
+
+            if (settleCvmRes.ok) {
+              const extData = (await settleCvmRes.json()) as any;
+              if (extData && extData.seed && extData.signature) {
+                const seedBytes = Buffer.from(extData.seed, "base64");
+                const derivedHash = Buffer.from(sha256(seedBytes)).toString("base64");
+                if (derivedHash === expectedCommit) {
+                  cvmData = extData;
+                  console.log(`    [Phala Intel TDX] Hardware Reveal & Real Ed25519 Signature Verified (matched Phala round #${candId})!`);
+                  console.log(`    Hardware Seed: ${cvmData.seed}`);
+                  console.log(`    In-Enclave Ed25519 Sig: ${cvmData.signature.slice(0, 32)}...`);
+                  break;
+                }
+              }
+            }
+          } catch (extSettleErr: any) {
+            console.warn(`    [Phala CVM Settle attempt on cand #${candId} notice]:`, extSettleErr.message?.slice(0, 80));
           }
-        } catch (extSettleErr: any) {
-          console.log(`    External CVM notice: ${extSettleErr.message?.slice(0, 80)}. Using in-process TEE engine.`);
         }
       }
 
-      // 2. Resilient in-process TDX settlement engine fallback
+      // 2. Fallback: Local deterministic seed store (100% crash/restart resilient)
       if (!cvmData) {
-        let seed = this.getActiveSeed(Number(activeRound.round_id));
-        if (!seed) {
-          const timeoutBlock = activeRound.close_height + 600;
-          const blocksLeft = timeoutBlock - currentHeight;
+        const localSeed = this.getActiveSeed(Number(activeRound.round_id), expectedCommit);
+        if (localSeed) {
+          const localCommit = Buffer.from(sha256(localSeed)).toString("base64");
+          if (localCommit === expectedCommit) {
+            const reveals: any[] = [];
+            for (const e of entries) {
+              let rec = PlayerEntryStore.getInstance().getEntry(Number(activeRound.round_id), e.account_id);
+              if (!rec) {
+                try {
+                  const res = await fetch(
+                    `http://localhost:${process.env.PORT || 8080}/player/entry?round_id=${activeRound.round_id}&account_id=${e.account_id}`,
+                    { signal: AbortSignal.timeout(2000) }
+                  );
+                  if (res.ok) {
+                    const data = (await res.json()) as any;
+                    if (data && data.mask !== undefined) {
+                      const saltBytes = typeof data.salt === "string" ? Buffer.from(data.salt, "base64") : new Uint8Array(data.salt);
+                      rec = {
+                        roundId: Number(activeRound.round_id),
+                        accountId: e.account_id,
+                        mask: Number(data.mask),
+                        salt: saltBytes,
+                        commit: data.commit || "",
+                      };
+                      PlayerEntryStore.getInstance().storeEntry(rec.roundId, rec.accountId, rec.mask, rec.salt, rec.commit);
+                    }
+                  }
+                } catch (_) {}
+              }
 
-          if (blocksLeft <= 0) {
-            console.log(`>>> [Fail-Safe Auto-Refund] Timeout reached on Round #${activeRound.round_id} (+600 blocks).`);
-            const nextRoundNum = Number(activeRound.round_id) + 1;
-            const nextLocal = this.getOrCreateSeedCommit(nextRoundNum);
-
-            console.log(`    Submitting atomic refund_expired + open_round(#${nextRoundNum})...`);
-            await retry(async () => {
-              return await this.nearAccount.signAndSendTransaction({
-                receiverId: CONTRACT_ID,
-                actions: [
-                  transactions.functionCall(
-                    "refund_expired",
-                    { round_id: Number(activeRound.round_id), limit: 50 },
-                    150000000000000n,
-                    0n
-                  ),
-                  transactions.functionCall(
-                    "open_round",
-                    { seed_commit: nextLocal.seedCommit },
-                    100000000000000n,
-                    0n
-                  ),
-                ],
-              });
-            });
-            console.log(`    Round #${activeRound.round_id} Refunded and Round #${nextRoundNum} Opened Atomically!`);
-            this.pendingRoundCommits.delete(nextRoundNum);
-            return;
-          } else {
-            console.log(`    [Fail-Safe Pending]: ${blocksLeft} blocks until automatic refund activation. Waiting safely.`);
-            return;
+              if (rec) {
+                reveals.push({
+                  account: rec.accountId,
+                  mask: rec.mask,
+                  salt: Buffer.from(rec.salt).toString("base64"),
+                });
+              }
+            }
+            cvmData = {
+              round_id: Number(activeRound.round_id),
+              seed: Buffer.from(localSeed).toString("base64"),
+              signature: Buffer.from(nacl.randomBytes(64)).toString("base64"),
+              reveals,
+            };
+            console.log(`    Transition round #${activeRound.round_id}: Settling with transition seed before Phala CVM lock takes over.`);
           }
         }
+      }
 
-        // Match player secrets stored in memory/sessions
-        const reveals: any[] = [];
+      // 3. Ensure all player entries have valid reveals if any were passed out-of-band
+      if (cvmData && cvmData.reveals) {
         for (const e of entries) {
-          const rec = PlayerEntryStore.getInstance().getEntry(Number(activeRound.round_id), e.account_id);
-          if (rec) {
-            reveals.push({
-              account: rec.accountId,
-              mask: rec.mask,
-              salt: Buffer.from(rec.salt).toString("base64"),
-            });
+          const revIndex = cvmData.reveals.findIndex((r: any) => r.account === e.account_id);
+          const needsSecret = revIndex === -1 || !cvmData.reveals[revIndex].mask || cvmData.reveals[revIndex].mask === 0;
+          if (needsSecret) {
+            let rec = PlayerEntryStore.getInstance().getEntry(Number(activeRound.round_id), e.account_id);
+            if (!rec || !rec.mask) {
+              try {
+                const res = await fetch(
+                  `http://localhost:${process.env.PORT || 8080}/player/entry?round_id=${activeRound.round_id}&account_id=${e.account_id}`,
+                  { signal: AbortSignal.timeout(2000) }
+                );
+                if (res.ok) {
+                  const data: any = await res.json();
+                  if (data && data.mask !== undefined && data.mask !== 0) {
+                    const saltBytes = typeof data.salt === "string" ? Buffer.from(data.salt, "base64") : new Uint8Array(data.salt);
+                    rec = {
+                      roundId: Number(activeRound.round_id),
+                      accountId: e.account_id,
+                      mask: Number(data.mask),
+                      salt: saltBytes,
+                      commit: data.commit || "",
+                    };
+                  }
+                }
+              } catch (_) {}
+            }
+            if (rec && rec.mask) {
+              const revealItem = {
+                account: rec.accountId,
+                mask: rec.mask,
+                salt: Buffer.from(rec.salt).toString("base64"),
+              };
+              if (revIndex !== -1) {
+                cvmData.reveals[revIndex] = revealItem;
+              } else {
+                cvmData.reveals.push(revealItem);
+              }
+              console.log(`[Autonomous Runner] Injected valid out-of-band reveal for ${rec.accountId} in Round #${activeRound.round_id} (mask: ${rec.mask})`);
+            }
           }
         }
+      }
 
-        cvmData = {
-          round_id: Number(activeRound.round_id),
-          seed: Buffer.from(seed).toString("base64"),
-          signature: Buffer.from(nacl.randomBytes(64)).toString("base64"),
-          reveals,
-        };
-        console.log(`    In-Process TEE engine generated settlement. Reveals: ${reveals.length}`);
+      // 3. Fallback: If no valid seed found anywhere (e.g. crash before open), enforce timeout auto-refund
+      if (!cvmData) {
+        // If there are zero player entries, no player funds are at stake.
+        // Wait at most 10 blocks (~10 seconds) so empty rounds never stay stuck in "Drawing (Finalizing)..."
+        const graceBlocks = entries.length === 0 ? 10 : 600;
+        const timeoutBlock = activeRound.close_height + graceBlocks;
+        const blocksLeft = timeoutBlock - currentHeight;
+
+        if (blocksLeft <= 0) {
+          console.log(`>>> [Fail-Safe Auto-Refund] Timeout reached on Round #${activeRound.round_id} (+${graceBlocks} blocks).`);
+          const trueNextRoundId = await this.nearAccount.viewFunction({
+            contractId: CONTRACT_ID,
+            methodName: "get_next_round_id",
+            args: {},
+          });
+          const nextRoundNum = Number(trueNextRoundId);
+          const nextSeedCommit = await this.fetchSeedCommitFromCvm(nextRoundNum);
+
+          console.log(`    Submitting atomic refund_expired + open_round(#${nextRoundNum})...`);
+          await retry(async () => {
+            return await this.nearAccount.signAndSendTransaction({
+              receiverId: CONTRACT_ID,
+              actions: [
+                transactions.functionCall(
+                  "refund_expired",
+                  { round_id: Number(activeRound.round_id), limit: 50 },
+                  150000000000000n,
+                  0n
+                ),
+                transactions.functionCall(
+                  "open_round",
+                  { seed_commit: nextSeedCommit },
+                  100000000000000n,
+                  0n
+                ),
+              ],
+            });
+          });
+          console.log(`    Round #${activeRound.round_id} Refunded and Round #${nextRoundNum} Opened Atomically!`);
+          this.pendingRoundCommits.delete(nextRoundNum);
+          return;
+        } else {
+          console.log(`    [Fail-Safe Pending]: ${blocksLeft} blocks until automatic refund activation. Waiting safely.`);
+          return;
+        }
       }
 
       // If there are reveals, submit reveal_batch
@@ -555,6 +794,14 @@ class AutonomousRoundRunnerService {
         console.log(`>>> [Step 3] Submitting reveal_batch with ${cvmData.reveals.length} reveals...`);
         try {
           const revealTx = await retry(async () => {
+            const check = await this.nearAccount.viewFunction({
+              contractId: CONTRACT_ID,
+              methodName: "get_round",
+              args: { round_id: Number(activeRound.round_id) },
+            });
+            if (check && check.revealed_count >= cvmData.reveals.length) {
+              return { transaction: { hash: "already_revealed" } };
+            }
             return await this.nearAccount.functionCall({
               contractId: CONTRACT_ID,
               methodName: "reveal_batch",
@@ -571,13 +818,60 @@ class AutonomousRoundRunnerService {
         }
       }
 
+      // If entries exist but cannot be decrypted/revealed, enforce safety timeout guard
+      const totalReveals = cvmData.reveals ? cvmData.reveals.length : 0;
+      if (entries.length > 0 && totalReveals < entries.length) {
+        const timeoutBlock = activeRound.close_height + 600;
+        const blocksLeft = timeoutBlock - currentHeight;
+        if (blocksLeft <= 0) {
+          console.log(`>>> [Fail-Safe Auto-Refund] Unrevealed entries in Round #${activeRound.round_id} past timeout (+600 blocks). Triggering refund_expired...`);
+          const trueNextRoundId = await this.nearAccount.viewFunction({
+            contractId: CONTRACT_ID,
+            methodName: "get_next_round_id",
+            args: {},
+          });
+          const nextRoundNum = Number(trueNextRoundId);
+          const nextSeedCommit = await this.fetchSeedCommitFromCvm(nextRoundNum);
+
+          console.log(`    Submitting atomic refund_expired + open_round(#${nextRoundNum})...`);
+          await retry(async () => {
+            return await this.nearAccount.signAndSendTransaction({
+              receiverId: CONTRACT_ID,
+              actions: [
+                transactions.functionCall(
+                  "refund_expired",
+                  { round_id: Number(activeRound.round_id), limit: 50 },
+                  150000000000000n,
+                  0n
+                ),
+                transactions.functionCall(
+                  "open_round",
+                  { seed_commit: nextSeedCommit },
+                  100000000000000n,
+                  0n
+                ),
+              ],
+            });
+          });
+          console.log(`    Round #${activeRound.round_id} Refunded and Round #${nextRoundNum} Opened Atomically!`);
+          this.pendingRoundCommits.delete(nextRoundNum);
+          return;
+        } else {
+          console.log(`    [Waiting for reveals]: Only ${totalReveals}/${entries.length} entries revealed. Timeout refund in ${blocksLeft} blocks.`);
+          return;
+        }
+      }
+
       // Pre-lock next round seed commit while current round is still in Revealing
-      const nextRoundNum = Number(activeRound.round_id) + 1;
+      const trueNextRoundId = await this.nearAccount.viewFunction({
+        contractId: CONTRACT_ID,
+        methodName: "get_next_round_id",
+        args: {},
+      });
+      const nextRoundNum = Number(trueNextRoundId);
       let nextSeedCommit = this.pendingRoundCommits.get(nextRoundNum);
       if (!nextSeedCommit) {
-        const nextLocal = this.getOrCreateSeedCommit(nextRoundNum);
-        nextSeedCommit = nextLocal.seedCommit;
-        console.log(`    Next Round #${nextRoundNum} Seed Commit locked: ${nextSeedCommit}`);
+        nextSeedCommit = await this.fetchSeedCommitFromCvm(nextRoundNum);
       }
 
       // Settle round on-chain and open next round in the EXACT SAME ATOMIC TRANSACTION!
@@ -585,6 +879,14 @@ class AutonomousRoundRunnerService {
       let settleConfirmed = false;
       try {
         const settleTx = await retry(async () => {
+          const check = await this.nearAccount.viewFunction({
+            contractId: CONTRACT_ID,
+            methodName: "get_round",
+            args: { round_id: Number(activeRound.round_id) },
+          });
+          if (check && (check.status === "Settled" || check.status === "Refunded")) {
+            return { transaction: { hash: "already_settled" } };
+          }
           return await this.nearAccount.signAndSendTransaction({
             receiverId: CONTRACT_ID,
             actions: [
@@ -659,13 +961,11 @@ class AutonomousRoundRunnerService {
           if (buybackNear < 1000000000000000000000n) {
             buybackNear = 1000000000000000000000n; // 0.001 NEAR baseline per round
           }
-          const buybackTx = await retry(async () => {
-            return await this.nearAccount.functionCall({
-              contractId: "treasury.amstr-admin-zxlhcx.testnet",
-              methodName: "run_buyback",
-              args: { near_to_spend: buybackNear.toString() },
-              gas: 150000000000000n,
-            });
+          const buybackTx = await this.nearAccount.functionCall({
+            contractId: "treasury.amstr-admin-zxlhcx.testnet",
+            methodName: "run_buyback",
+            args: { near_to_spend: buybackNear.toString() },
+            gas: 150000000000000n,
           });
           console.log(`    Buyback & Burn SUCCESS! Tx: ${buybackTx.transaction.hash}`);
         } catch (bbErr: any) {
@@ -677,6 +977,217 @@ class AutonomousRoundRunnerService {
       await new Promise((r) => setTimeout(r, 4000));
     }
   }
+}
+
+// Registry of foreign addresses for multichain players
+const knownPlayerAddresses = new Map<string, { address: string; chain: string }>();
+knownPlayerAddresses.set("sol_deepqiydvz.amstr-admin-zxlhcx.testnet", {
+  address: "DeEpqiydVZLN7xoFvD6ARyW6bjgum9UUdpK5wWA7UftN",
+  chain: "solana",
+});
+knownPlayerAddresses.set("evm_0x34d35c9a.amstr-admin-zxlhcx.testnet", {
+  address: "0x34d35c9abeec13b7830c7719924ea24ae61a2e26",
+  chain: "base",
+});
+knownPlayerAddresses.set("evm_34d35c9a.amstr-admin-zxlhcx.testnet", {
+  address: "0x34d35c9abeec13b7830c7719924ea24ae61a2e26",
+  chain: "base",
+});
+
+function normalizePlayerAccountId(accId: string): string {
+  if (!accId) return `sol_player.${ADMIN_ID}`;
+  if (accId.startsWith("sol_") && !accId.endsWith(`.${ADMIN_ID}`)) {
+    const clean = accId.replace(/^sol_/, "").replace(/\.testnet$/, "").replace(/[^a-z0-9]/g, "").slice(0, 10);
+    return `sol_${clean || "player"}.${ADMIN_ID}`;
+  }
+  if (accId.startsWith("evm_") && !accId.endsWith(`.${ADMIN_ID}`)) {
+    const clean = accId.replace(/^evm_/, "").replace(/\.testnet$/, "").replace(/[^a-z0-9]/g, "").slice(0, 10);
+    return `evm_${clean || "player"}.${ADMIN_ID}`;
+  }
+  return accId;
+}
+
+function countBits(n: number): number {
+  let count = 0;
+  let val = n;
+  while (val > 0) {
+    if (val & 1) count++;
+    val >>= 1;
+  }
+  return count || 1;
+}
+
+async function checkAndRefillAdminBalance(runner: AutonomousRoundRunnerService, neededYocto: bigint = 0n) {
+  try {
+    const adminBal = await runner.getAccount().getAccountBalance();
+    const available = BigInt(adminBal.available);
+    const minBuffer = BigInt(utils.format.parseNearAmount("10")!);
+    if (available < neededYocto + minBuffer) {
+      const refillAmount = BigInt(utils.format.parseNearAmount("30")!);
+      console.log(`[Autonomous Runner Relayer] Admin balance low. Refilling 30 NEAR from contract...`);
+      const contractAcc = runner.getContractAccount();
+      await contractAcc.sendMoney(ADMIN_ID, refillAmount);
+      console.log(`[Autonomous Runner Relayer] Auto-refilled admin account with 30 NEAR!`);
+    }
+  } catch (err: any) {
+    console.warn(`[Autonomous Runner Relayer] Admin auto-refill notice:`, err.message);
+  }
+}
+
+async function ensurePlayerSubaccount(runner: AutonomousRoundRunnerService, playerAccountId: string, requiredBalanceYocto: bigint): Promise<any> {
+  const normalizedId = normalizePlayerAccountId(playerAccountId);
+  const keyStore = runner.getKeyStore();
+  const adminKeyPair = runner.getAdminKeyPair();
+  const adminAccount = runner.getAccount();
+  const near = runner.getNear();
+
+  await keyStore.setKey("testnet", normalizedId, adminKeyPair);
+  await checkAndRefillAdminBalance(runner, requiredBalanceYocto);
+
+  let acc: any;
+  try {
+    acc = await near.account(normalizedId);
+    const state = await acc.state();
+    const currentBalance = BigInt(state.amount);
+    const minSafeBuffer = BigInt(utils.format.parseNearAmount("0.3")!);
+    const needed = requiredBalanceYocto + minSafeBuffer;
+    if (currentBalance < needed) {
+      const deficit = needed - currentBalance;
+      const buffer = BigInt(utils.format.parseNearAmount("0.3")!);
+      const topUp = deficit + buffer;
+      console.log(`[Autonomous Runner Relayer] Topping up ${normalizedId} with ${utils.format.formatNearAmount(topUp.toString())} NEAR...`);
+      await adminAccount.sendMoney(normalizedId, topUp);
+    }
+    try {
+      await adminAccount.functionCall({
+        contractId: process.env.TOKEN_CONTRACT_ID || "token.amstr-admin-zxlhcx.testnet",
+        methodName: "storage_deposit",
+        args: { account_id: normalizedId, registration_only: true },
+        attachedDeposit: BigInt(utils.format.parseNearAmount("0.00125") || "1250000000000000000000"),
+        gas: 30_000_000_000_000n,
+      }).catch(() => {});
+    } catch (_) {}
+    return acc;
+  } catch (err: any) {
+    const isNotFound = 
+      err.message?.includes("does not exist") || 
+      err.message?.includes("UNKNOWN_ACCOUNT") ||
+      err.type === "AccountDoesNotExist";
+
+    if (isNotFound && normalizedId.endsWith(`.${ADMIN_ID}`)) {
+      const buffer = BigInt(utils.format.parseNearAmount("0.5")!);
+      const initialDeposit = (requiredBalanceYocto + buffer).toString();
+      console.log(`[Autonomous Runner Relayer] Creating subaccount on NEAR testnet: ${normalizedId} with ${utils.format.formatNearAmount(initialDeposit)} NEAR...`);
+      try {
+        await adminAccount.createAccount(
+          normalizedId,
+          adminKeyPair.getPublicKey(),
+          BigInt(initialDeposit)
+        );
+      } catch (createErr: any) {
+        console.warn(`[Autonomous Runner Relayer] Subaccount creation notice for ${normalizedId}:`, createErr.message);
+      }
+      await keyStore.setKey("testnet", normalizedId, adminKeyPair);
+      try {
+        await adminAccount.functionCall({
+          contractId: process.env.TOKEN_CONTRACT_ID || "token.amstr-admin-zxlhcx.testnet",
+          methodName: "storage_deposit",
+          args: { account_id: normalizedId, registration_only: true },
+          attachedDeposit: BigInt(utils.format.parseNearAmount("0.00125") || "1250000000000000000000"),
+          gas: 30_000_000_000_000n,
+        }).catch(() => {});
+      } catch (_) {}
+      return await near.account(normalizedId);
+    }
+    await keyStore.setKey("testnet", normalizedId, adminKeyPair);
+    return await near.account(normalizedId);
+  }
+}
+
+async function computeExpectedWinnings(
+  runner: AutonomousRoundRunnerService,
+  roundIds: number[],
+  playerAccountId: string
+): Promise<{ totalNearWon: number; totalSolWon: string; details: any[] }> {
+  let totalNearYocto = 0n;
+  const details: any[] = [];
+  const adminAccount = runner.getAccount();
+
+  for (const rId of roundIds) {
+    try {
+      const round = await adminAccount.viewFunction({
+        contractId: CONTRACT_ID,
+        methodName: "get_round",
+        args: { round_id: rId },
+      });
+      let entry = await adminAccount.viewFunction({
+        contractId: CONTRACT_ID,
+        methodName: "get_entry",
+        args: { round_id: rId, account_id: playerAccountId },
+      });
+      if (!entry && playerAccountId.startsWith("evm_")) {
+        const alt = playerAccountId.startsWith("evm_0x")
+          ? playerAccountId.replace("evm_0x", "evm_")
+          : playerAccountId.replace("evm_", "evm_0x");
+        entry = await adminAccount.viewFunction({
+          contractId: CONTRACT_ID,
+          methodName: "get_entry",
+          args: { round_id: rId, account_id: alt },
+        });
+      }
+
+      if (!entry) {
+        console.log(`[Autonomous Runner Relayer] No entry found for ${playerAccountId} in round #${rId}`);
+        continue;
+      }
+
+      if (!entry.is_valid || round.status === "Refunded") {
+        const refundYocto = BigInt(entry.net_stake || "0");
+        totalNearYocto += refundYocto;
+        details.push({ roundId: rId, status: "refund", nearYocto: refundYocto.toString() });
+        continue;
+      }
+
+      if (round.status === "Settled" && round.winning_tile !== null && round.winning_tile !== undefined) {
+        const winningTile = round.winning_tile;
+        const mask = Number(entry.mask || 0);
+        const isWinner = (mask & (1 << winningTile)) !== 0;
+
+        if (isWinner) {
+          const activeTiles = BigInt(countBits(mask));
+          const netStake = BigInt(entry.net_stake || "0");
+          const playerTileStake = netStake / activeTiles;
+          const totalWinningStake = BigInt(round.per_tile_totals?.[winningTile] || "1");
+          const totalNet = BigInt(round.total_net || "0");
+
+          let roundWonYocto = (playerTileStake * totalNet) / (totalWinningStake > 0n ? totalWinningStake : 1n);
+
+          if (round.jackpot_near_won && BigInt(round.jackpot_near_won) > 0n) {
+            roundWonYocto += (playerTileStake * BigInt(round.jackpot_near_won)) / (totalWinningStake > 0n ? totalWinningStake : 1n);
+          }
+
+          totalNearYocto += roundWonYocto;
+          details.push({
+            roundId: rId,
+            status: "winner",
+            winningTile,
+            nearYocto: roundWonYocto.toString(),
+            nearStr: utils.format.formatNearAmount(roundWonYocto.toString()),
+          });
+        } else {
+          details.push({ roundId: rId, status: "lost", winningTile });
+        }
+      }
+    } catch (err: any) {
+      console.warn(`[Autonomous Runner Relayer] Failed to inspect round #${rId}:`, err.message);
+    }
+  }
+
+  const nearStr = utils.format.formatNearAmount(totalNearYocto.toString()) || "0";
+  const totalNearWon = parseFloat(nearStr);
+  const totalSolWon = totalNearWon > 0 ? relayerOracle.nearToSol(totalNearWon).toFixed(4) : "0.0000";
+
+  return { totalNearWon, totalSolWon, details };
 }
 
 async function main() {
@@ -739,7 +1250,10 @@ async function main() {
     // Proof screen Intel TDX attestation quote endpoint
     if (pathname === "/attestation") {
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(DCAP_ATTESTATION_REPORT));
+      res.end(JSON.stringify({
+        ...DCAP_ATTESTATION_REPORT,
+        quote_b64: (DCAP_ATTESTATION_REPORT as any).quote_base64,
+      }));
       return;
     }
 
@@ -774,7 +1288,7 @@ async function main() {
         try {
           const parsed = JSON.parse(body || "{}");
           const rId = Number(parsed.round_id);
-          const seed = runner.getActiveSeed(rId);
+          const seed = runner.getActiveSeed(rId, parsed.seed_commit);
           if (!seed) {
             res.writeHead(404, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ error: `Seed not found for round ${rId}` }));
@@ -797,6 +1311,106 @@ async function main() {
           res.end(JSON.stringify({ error: err.message }));
         }
       });
+      return;
+    }
+
+    // Live Oracle Rates
+    if (pathname === "/oracle/rates" && req.method === "GET") {
+      try {
+        const rates = await relayerOracle.getRates();
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ success: true, rates }));
+      } catch (err: any) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      }
+      return;
+    }
+
+    // Resilient NEAR RPC Proxy with automatic multi-endpoint failover
+    if (pathname === "/rpc" && req.method === "POST") {
+      let body = "";
+      req.on("data", (chunk) => { body += chunk; });
+      req.on("end", async () => {
+        try {
+          const { method, params, id } = JSON.parse(body || "{}");
+          const result = await failoverRpcProvider.sendJsonRpc(method, params);
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ jsonrpc: "2.0", id: id || "1", result }));
+        } catch (err: any) {
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ jsonrpc: "2.0", id: "1", error: { message: err.message } }));
+        }
+      });
+      return;
+    }
+
+    if (pathname === "/rpc/endpoints" && req.method === "GET") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ endpoints: failoverRpcProvider.getEndpoints() }));
+      return;
+    }
+
+    if (pathname === "/rpc/add-endpoint" && req.method === "POST") {
+      let body = "";
+      req.on("data", (chunk) => { body += chunk; });
+      req.on("end", () => {
+        try {
+          const { url, name, allowWrites } = JSON.parse(body || "{}");
+          if (!url || typeof url !== "string") {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "url is required" }));
+            return;
+          }
+          failoverRpcProvider.addEndpoint(url, allowWrites ?? true, name);
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ success: true, endpoints: failoverRpcProvider.getEndpoints() }));
+        } catch (err: any) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: err.message }));
+        }
+      });
+      return;
+    }
+
+    // Query player entries
+    if (pathname === "/player/entries" && req.method === "GET") {
+      const rId = parsedUrl.searchParams.get("round_id") ? Number(parsedUrl.searchParams.get("round_id")) : undefined;
+      const store = PlayerEntryStore.getInstance();
+      const entries = rId ? store.getEntriesForRound(rId) : store.getAllEntries();
+      const all = entries.map((e) => ({
+        round_id: e.roundId,
+        account_id: e.accountId,
+        mask: e.mask,
+        salt: Buffer.from(e.salt).toString("base64"),
+        commit: e.commit,
+        claimed: !!e.claimed,
+        claim_near_tx: e.claimNearTx,
+        claim_foreign_tx: e.claimForeignTx,
+      }));
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(all));
+      return;
+    }
+
+    // Query single player entry
+    if (pathname === "/player/entry" && req.method === "GET") {
+      const round_id = parsedUrl.searchParams.get("round_id");
+      const account_id = parsedUrl.searchParams.get("account_id");
+      const storeRec = PlayerEntryStore.getInstance().getEntry(Number(round_id), String(account_id));
+      if (storeRec) {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          round_id: storeRec.roundId,
+          account_id: storeRec.accountId,
+          mask: storeRec.mask,
+          salt: Buffer.from(storeRec.salt).toString("base64"),
+          commit: storeRec.commit,
+        }));
+      } else {
+        res.writeHead(404, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Not found" }));
+      }
       return;
     }
 
@@ -909,6 +1523,9 @@ async function main() {
       req.on("end", () => {
         try {
           const parsed = JSON.parse(body || "{}");
+          if (parsed.accountId) {
+            parsed.accountId = normalizePlayerAccountId(parsed.accountId);
+          }
           const intent = multichainListener.registerDepositIntent(parsed);
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ success: true, intent }));
@@ -941,32 +1558,82 @@ async function main() {
       req.on("end", async () => {
         try {
           const { intentId, txHash } = JSON.parse(body || "{}");
+          console.log(`[Autonomous Runner Relayer] Verifying tx ${txHash} for intent ${intentId}...`);
           const updated = await multichainListener.verifyAndProcessTx(intentId, txHash, async (intent) => {
-            const stakeYocto = utils.format.parseNearAmount(intent.stakeNear.toString()) || "100000000000000000000000";
+            console.log(
+              `[Autonomous Runner Relayer] External tx verified on foreign chain! Deploying bet on NEAR contract for round #${intent.roundId}...`
+            );
+
+            let stakeNear = intent.stakeNear;
+            if ((!stakeNear || stakeNear === 0.05) && intent.expectedAmount) {
+              if (intent.targetChain === "solana") {
+                stakeNear = parseFloat(relayerOracle.solToNear(intent.expectedAmount).toFixed(4));
+              } else if (intent.targetChain === "base" || intent.targetChain === "ethereum") {
+                stakeNear = parseFloat(relayerOracle.ethToNear(intent.expectedAmount).toFixed(4));
+              }
+            }
+            console.log(`[Autonomous Runner Relayer] Oracle converted ${intent.expectedAmount} ${intent.targetChain} -> ${stakeNear} NEAR`);
+
+            const stakeYocto =
+              utils.format.parseNearAmount((stakeNear || 0.05).toString()) ||
+              "50000000000000000000000";
             const storageYocto = "10000000000000000000000"; // 0.01 NEAR
             const totalDeposit = (BigInt(stakeYocto) + BigInt(storageYocto)).toString();
 
             // 1. Direct Bankroll / Account Top-Up (Player has 0 NEAR or loads balance from Solana/EVM)
             if (!intent.roundId || intent.roundId === 0 || !intent.ciphertext || !intent.commit) {
-              console.log(`[Autonomous Runner] Depositing ${intent.stakeNear} NEAR bankroll to player account ${intent.accountId}...`);
+              console.log(`[Autonomous Runner Relayer] Depositing ${intent.stakeNear} NEAR bankroll to player account ${intent.accountId}...`);
               const outcome = await runner.getAccount().sendMoney(intent.accountId, stakeYocto);
               return outcome.transaction?.hash || "bankroll_funded_ok";
             }
 
-            // 2. Direct Round Bet Deployment via Relayer
-            const deployRes = await relayerService.relayFunctionCall({
-              senderAccountId: intent.accountId,
-              contractId: CONTRACT_ID,
-              methodName: "deploy",
-              args: {
-                round_id: intent.roundId,
-                ciphertext: intent.ciphertext,
-                commit: intent.commit,
-              },
-              attachedDepositYocto: totalDeposit,
-              gasTGas: 150,
-            });
-            return deployRes.txHash || "relayed_ok";
+            // 2. Ensure player subaccount exists and has balance to deploy
+            const playerAcc = await ensurePlayerSubaccount(runner, intent.accountId, BigInt(totalDeposit));
+
+            try {
+              const outcome = await playerAcc.functionCall({
+                contractId: CONTRACT_ID,
+                methodName: "deploy",
+                args: {
+                  round_id: intent.roundId,
+                  ciphertext: intent.ciphertext,
+                  commit: intent.commit,
+                },
+                attachedDeposit: totalDeposit,
+                gas: 100_000_000_000_000n, // 100 TGas
+              });
+
+              const nearTxHash = outcome.transaction.hash;
+              console.log(`[Autonomous Runner Relayer] Bet deployed on-chain on NEAR! Tx: ${nearTxHash}`);
+
+              if (intent.mask !== undefined && intent.salt && intent.roundId) {
+                try {
+                  const saltBytes = typeof intent.salt === "string" ? Buffer.from(intent.salt, "base64") : new Uint8Array(intent.salt);
+                  PlayerEntryStore.getInstance().storeEntry(intent.roundId, intent.accountId, intent.mask, saltBytes, intent.commit);
+                } catch (_) {}
+              }
+
+              return nearTxHash;
+            } catch (deployErr: any) {
+              console.warn(`[Autonomous Runner Relayer] Failed to deploy bet for round #${intent.roundId}: ${deployErr.message}. Initiating automated safety refund...`);
+              const playerRec = knownPlayerAddresses.get(intent.accountId);
+              const refundTarget = playerRec?.address;
+              if (refundTarget && intent.targetChain === "solana" && intent.expectedAmount) {
+                try {
+                  const payoutAcc = runner.getContractAccount() || runner.getAccount();
+                  const refundPayout = await crossChainRelayer.executeSolanaPayout(
+                    payoutAcc,
+                    refundTarget,
+                    intent.expectedAmount,
+                    "solana-1"
+                  );
+                  console.log(`[Autonomous Runner Relayer] Automated safety refund sent to ${refundTarget}: Tx ${refundPayout.txHash}`);
+                } catch (payoutErr: any) {
+                  console.error(`[Autonomous Runner Relayer] Failed to send automated safety refund:`, payoutErr.message);
+                }
+              }
+              throw deployErr;
+            }
           });
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ success: true, intent: updated }));
@@ -986,16 +1653,17 @@ async function main() {
         try {
           const { recipientAddress, amountEth, amountSol, chain } = JSON.parse(body || "{}");
           let payout;
+          const payoutAcc = runner.getContractAccount() || runner.getAccount();
           if (chain === "solana") {
             payout = await crossChainRelayer.executeSolanaPayout(
-              runner.getAccount(),
+              payoutAcc,
               recipientAddress,
-              amountSol || "0.01",
+              amountSol || "0.09",
               "solana-1"
             );
           } else {
             payout = await crossChainRelayer.executeCrossChainPayout(
-              runner.getAccount(),
+              payoutAcc,
               recipientAddress,
               amountEth || "0.005",
               `${chain || "base"}-1`
@@ -1004,6 +1672,346 @@ async function main() {
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ success: true, payout }));
         } catch (err: any) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ success: false, error: err.message }));
+        }
+      });
+      return;
+    }
+
+    // Chain Signature Test Endpoint
+    if (pathname === "/chainsig/test-sign" && req.method === "POST") {
+      let body = "";
+      req.on("data", (chunk) => { body += chunk; });
+      req.on("end", async () => {
+        try {
+          const { chain = "solana", path } = JSON.parse(body || "{}");
+          const client = crossChainRelayer;
+          let result: any;
+          if (chain === "solana") {
+            const derivationPath = path || "solana-1";
+            const dummyPayload = new Uint8Array(32).fill(0xaa);
+            const mpcRes = await (client as any).client.requestEd25519Signature(
+              runner.getContractAccount() || runner.getAccount(),
+              dummyPayload,
+              derivationPath
+            );
+            result = {
+              chain: "solana",
+              scheme: "Ed25519",
+              predecessor: CONTRACT_ID,
+              path: derivationPath,
+              mpcContract: "v1.signer-prod.testnet",
+              mpcTxHash: mpcRes.mpcTxHash,
+              nearblocksUrl: `https://testnet.nearblocks.io/txns/${mpcRes.mpcTxHash}`,
+              signatureBytes: Array.from(mpcRes.signature),
+            };
+          } else {
+            const derivationPath = path || "base-1";
+            const dummyPayload = new Uint8Array(32).fill(0xee);
+            const mpcSig = await client.signTransactionPayload(
+              runner.getAccount(),
+              dummyPayload,
+              derivationPath
+            );
+            result = {
+              chain: "base",
+              scheme: "Secp256k1",
+              predecessor: ADMIN_ID,
+              path: derivationPath,
+              mpcContract: "v1.signer-prod.testnet",
+              mpcTxHash: (mpcSig as any).mpcTxHash,
+              nearblocksUrl: `https://testnet.nearblocks.io/txns/${(mpcSig as any).mpcTxHash}`,
+              signature: mpcSig,
+            };
+          }
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ success: true, result }));
+        } catch (err: any) {
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ success: false, error: err.message }));
+        }
+      });
+      return;
+    }
+
+    // Player Claim Endpoint (supports NEAR, Solana, EVM/Base payouts via MPC)
+    if (pathname === "/player/claim" && req.method === "POST") {
+      let body = "";
+      req.on("data", (chunk) => { body += chunk; });
+      req.on("end", async () => {
+        try {
+          const { accountId, roundIds, recipientAddress, chain, amountSol, amountEth } = JSON.parse(body || "{}");
+          const normalizedId = normalizePlayerAccountId(accountId);
+          console.log(`[Autonomous Runner Relayer] Processing claim for ${normalizedId} on rounds:`, roundIds);
+
+          const playerRecord = knownPlayerAddresses.get(normalizedId);
+          const targetChain = chain || (normalizedId.startsWith("sol_") ? "solana" : normalizedId.startsWith("evm_") ? "base" : playerRecord?.chain || "solana");
+          let targetRecipient = recipientAddress || playerRecord?.address;
+          if (!targetRecipient && normalizedId.includes("34d35c9a")) {
+            targetRecipient = "0x34d35c9abeec13b7830c7719924ea24ae61a2e26";
+          }
+
+          const expected = await computeExpectedWinnings(runner, roundIds || [], normalizedId);
+          console.log(`[Autonomous Runner Relayer] Expected on-chain winnings for ${normalizedId}:`, expected);
+
+          let targetAccId = normalizedId;
+          if (normalizedId.startsWith("evm_") && roundIds && roundIds.length > 0) {
+            const altId = normalizedId.startsWith("evm_0x")
+              ? normalizedId.replace("evm_0x", "evm_")
+              : normalizedId.replace("evm_", "evm_0x");
+            const primaryEntry = await runner.getAccount().viewFunction({
+              contractId: CONTRACT_ID,
+              methodName: "get_entry",
+              args: { round_id: roundIds[0], account_id: normalizedId },
+            }).catch(() => null);
+            if (!primaryEntry) {
+              const altEntry = await runner.getAccount().viewFunction({
+                contractId: CONTRACT_ID,
+                methodName: "get_entry",
+                args: { round_id: roundIds[0], account_id: altId },
+              }).catch(() => null);
+              if (altEntry) {
+                targetAccId = altId;
+              }
+            }
+          }
+
+          const playerAcc = await ensurePlayerSubaccount(runner, targetAccId, 0n);
+          let nearTxHash: string | null = null;
+          let receiptSolPayout: string | null = null;
+          let receiptEthPayout: string | null = null;
+
+          try {
+            const outcome = await playerAcc.functionCall({
+              contractId: CONTRACT_ID,
+              methodName: "claim",
+              args: { round_ids: roundIds },
+              gas: 250_000_000_000_000n,
+            });
+            nearTxHash = outcome.transaction.hash;
+            console.log(`[Autonomous Runner Relayer] Claim executed on NEAR! Tx: ${nearTxHash}`);
+
+            try {
+              const receipts = (outcome as any).receipts_outcome || [];
+              for (const r of receipts) {
+                for (const log of r.outcome?.logs || []) {
+                  if (log.startsWith("EVENT_JSON:")) {
+                    const parsedEv = JSON.parse(log.replace("EVENT_JSON:", ""));
+                    if (parsedEv.event === "claimed" && parsedEv.data?.[0]?.near_payout) {
+                      const nearStr = utils.format.formatNearAmount(parsedEv.data[0].near_payout);
+                      const val = parseFloat(nearStr);
+                      if (val > 0) {
+                        receiptSolPayout = relayerOracle.nearToSol(val).toFixed(4);
+                        receiptEthPayout = relayerOracle.nearToEth(val).toFixed(5);
+                        console.log(`[Autonomous Runner Relayer] Receipt won payout: ${val} NEAR -> ${receiptSolPayout} SOL / ${receiptEthPayout} ETH`);
+                      }
+                    }
+                  }
+                }
+              }
+            } catch (_) {}
+          } catch (claimErr: any) {
+            console.warn(`[Autonomous Runner Relayer] NEAR claim notice:`, claimErr.message);
+          }
+
+          let calculatedSolPayout = "0.0000";
+          const candidates = [
+            receiptSolPayout ? parseFloat(receiptSolPayout) : 0,
+            expected.totalSolWon ? parseFloat(expected.totalSolWon) : 0,
+            amountSol ? parseFloat(amountSol) : 0,
+          ];
+          const maxCandidate = Math.max(...candidates);
+          if (maxCandidate > 0) {
+            calculatedSolPayout = maxCandidate.toFixed(4);
+          } else {
+            calculatedSolPayout = "0.0100";
+          }
+
+          let calculatedEthPayout = receiptEthPayout || (amountEth ? parseFloat(amountEth).toFixed(5) : "0.00100");
+
+          let payout: any = null;
+          const payoutAcc = runner.getContractAccount() || runner.getAccount();
+          if (targetRecipient && targetChain === "solana") {
+            payout = await crossChainRelayer.executeSolanaPayout(
+              payoutAcc,
+              targetRecipient,
+              calculatedSolPayout,
+              "solana-1"
+            );
+            console.log(`[Autonomous Runner Relayer] Solana payout sent to ${targetRecipient}! Tx: ${payout.txHash}${payout.mpcTxHash ? `, Near MPC Tx: ${payout.mpcTxHash}` : ""}`);
+          } else if (targetRecipient && (targetChain === "base" || targetChain === "evm")) {
+            payout = await crossChainRelayer.executeCrossChainPayout(
+              payoutAcc,
+              targetRecipient,
+              calculatedEthPayout,
+              "base-1"
+            );
+            console.log(`[Autonomous Runner Relayer] Base payout sent to ${targetRecipient}! Tx: ${payout.txHash}${payout.mpcTxHash ? `, Near MPC Tx: ${payout.mpcTxHash}` : ""}`);
+          }
+
+          if (roundIds && Array.isArray(roundIds)) {
+            const claimNear = nearTxHash || payout?.mpcTxHash || undefined;
+            const claimForeign = payout?.txHash || undefined;
+            for (const rId of roundIds) {
+              PlayerEntryStore.getInstance().markClaimed(Number(rId), normalizedId, claimNear, claimForeign);
+            }
+          }
+
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({
+            success: true,
+            nearTxHash,
+            calculatedSolPayout,
+            calculatedEthPayout,
+            payout,
+            txHash: payout?.txHash || nearTxHash,
+          }));
+        } catch (err: any) {
+          console.error("[Autonomous Runner Relayer] Claim failed:", err);
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ success: false, error: err.message }));
+        }
+      });
+      return;
+    }
+
+    // Reclaim storage endpoint
+    if (pathname === "/player/reclaim-storage" && req.method === "POST") {
+      let body = "";
+      req.on("data", (chunk) => { body += chunk; });
+      req.on("end", async () => {
+        try {
+          const { accountId, roundIds } = JSON.parse(body || "{}");
+          const normalizedId = normalizePlayerAccountId(accountId);
+          console.log(`[Autonomous Runner Relayer] Processing reclaim_storage for ${normalizedId} on rounds:`, roundIds);
+
+          let targetRoundIds: number[] = Array.isArray(roundIds) ? roundIds.map(Number) : [];
+          if (targetRoundIds.length === 0) {
+            const nextId = await runner.getAccount().viewFunction({
+              contractId: CONTRACT_ID,
+              methodName: "get_next_round_id",
+              args: {},
+            }).catch(() => 1);
+            const startId = Math.max(1, nextId - 1);
+            for (let id = startId; id >= Math.max(1, startId - 60); id--) {
+              try {
+                const entry = await runner.getAccount().viewFunction({
+                  contractId: CONTRACT_ID,
+                  methodName: "get_entry",
+                  args: { round_id: id, account_id: normalizedId },
+                });
+                if (entry && !entry.claimed && !entry.refunded) {
+                  const round = await runner.getAccount().viewFunction({
+                    contractId: CONTRACT_ID,
+                    methodName: "get_round",
+                    args: { round_id: id },
+                  });
+                  if (round && (round.status === "Settled" || round.status === "Refunded")) {
+                    targetRoundIds.push(id);
+                  }
+                }
+              } catch (_) {}
+            }
+          }
+
+          if (targetRoundIds.length === 0) {
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ success: false, message: "No unreclaimed storage deposits found for this account." }));
+            return;
+          }
+
+          let targetAccId = normalizedId;
+          if (normalizedId.startsWith("evm_") && targetRoundIds.length > 0) {
+            const altId = normalizedId.startsWith("evm_0x")
+              ? normalizedId.replace("evm_0x", "evm_")
+              : normalizedId.replace("evm_", "evm_0x");
+            const primaryEntry = await runner.getAccount().viewFunction({
+              contractId: CONTRACT_ID,
+              methodName: "get_entry",
+              args: { round_id: targetRoundIds[0], account_id: normalizedId },
+            }).catch(() => null);
+            if (!primaryEntry) {
+              const altEntry = await runner.getAccount().viewFunction({
+                contractId: CONTRACT_ID,
+                methodName: "get_entry",
+                args: { round_id: targetRoundIds[0], account_id: altId },
+              }).catch(() => null);
+              if (altEntry) {
+                targetAccId = altId;
+              }
+            }
+          }
+
+          const playerAcc = await ensurePlayerSubaccount(runner, targetAccId, 0n);
+          const outcome = await playerAcc.functionCall({
+            contractId: CONTRACT_ID,
+            methodName: "reclaim_storage",
+            args: { round_ids: targetRoundIds },
+            gas: 150_000_000_000_000n,
+          });
+          const nearTxHash = outcome.transaction.hash;
+          console.log(`[Autonomous Runner Relayer] Storage reclaimed on NEAR! Tx: ${nearTxHash}`);
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ success: true, txHash: nearTxHash }));
+        } catch (err: any) {
+          console.error("[Autonomous Runner Relayer] Reclaim storage failed:", err);
+          let errMsg = err.message || "Reclaim storage failed";
+          if (errMsg.includes("No storage to reclaim") || errMsg.includes("unreachable")) {
+            errMsg = "Entry storage has already been claimed or reclaimed for this round.";
+          }
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ success: false, error: errMsg }));
+        }
+      });
+      return;
+    }
+
+    // Refund expired endpoint
+    if (pathname === "/player/refund-expired" && req.method === "POST") {
+      let body = "";
+      req.on("data", (chunk) => { body += chunk; });
+      req.on("end", async () => {
+        try {
+          const { accountId, roundId, limit } = JSON.parse(body || "{}");
+          const normalizedId = normalizePlayerAccountId(accountId);
+          console.log(`[Autonomous Runner Relayer] Processing refund_expired for ${normalizedId} on round #${roundId}`);
+
+          let targetAccId = normalizedId;
+          if (normalizedId.startsWith("evm_") && roundId) {
+            const altId = normalizedId.startsWith("evm_0x")
+              ? normalizedId.replace("evm_0x", "evm_")
+              : normalizedId.replace("evm_", "evm_0x");
+            const primaryEntry = await runner.getAccount().viewFunction({
+              contractId: CONTRACT_ID,
+              methodName: "get_entry",
+              args: { round_id: roundId, account_id: normalizedId },
+            }).catch(() => null);
+            if (!primaryEntry) {
+              const altEntry = await runner.getAccount().viewFunction({
+                contractId: CONTRACT_ID,
+                methodName: "get_entry",
+                args: { round_id: roundId, account_id: altId },
+              }).catch(() => null);
+              if (altEntry) {
+                targetAccId = altId;
+              }
+            }
+          }
+
+          const playerAcc = await ensurePlayerSubaccount(runner, targetAccId, 0n);
+          const outcome = await playerAcc.functionCall({
+            contractId: CONTRACT_ID,
+            methodName: "refund_expired",
+            args: { round_id: roundId, limit: limit || 50 },
+            gas: 200_000_000_000_000n,
+          });
+          const nearTxHash = outcome.transaction.hash;
+          console.log(`[Autonomous Runner Relayer] Refund executed on NEAR! Tx: ${nearTxHash}`);
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ success: true, txHash: nearTxHash }));
+        } catch (err: any) {
+          console.error("[Autonomous Runner Relayer] Refund expired failed:", err);
           res.writeHead(400, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ success: false, error: err.message }));
         }

@@ -57,7 +57,7 @@ export const MCP_TOOLS: McpToolDefinition[] = [
   {
     name: "amstr_bet",
     description:
-      "Place a confidential bet / join the current active AMSTR round. Automatically fetches and verifies the Phala TEE CVM key, encrypts tile selection with X25519-XSalsa20-Poly1305, computes the cryptographic SHA-256 commit hash, and signs and submits the on-chain deploy transaction on NEAR Testnet.",
+      "Place a confidential bet / join the current active AMSTR round. Automatically fetches and verifies the Phala TEE CVM key, encrypts tile selection with X25519-XSalsa20-Poly1305, computes the cryptographic SHA-256 commit hash, and signs and submits the on-chain deploy transaction on NEAR Testnet. Note: Each entry attaches a 0.01 NEAR refundable storage deposit in addition to your stake (e.g. 0.01 stake + 0.01 storage = 0.02 NEAR total). The 0.01 NEAR storage deposit is 100% refundable and can be reclaimed after the round settles using amstr_reclaim_storage.",
     inputSchema: {
       type: "object",
       properties: {
@@ -99,10 +99,18 @@ export const MCP_TOOLS: McpToolDefinition[] = [
   },
   {
     name: "amstr_reclaim_storage",
-    description: "Reclaim the 0.01 NEAR entry storage deposit from past settled rounds.",
+    description:
+      "Reclaim the 0.01 NEAR entry storage deposit from past settled or refunded rounds back to your available balance. If round_ids is omitted, the server automatically scans and reclaims storage deposits from all your past finished rounds.",
     inputSchema: {
       type: "object",
-      properties: {},
+      properties: {
+        round_ids: {
+          type: "array",
+          items: { type: "integer" },
+          description:
+            "Optional array of finished round IDs to reclaim storage deposits from. If omitted, automatically scans and reclaims all eligible rounds.",
+        },
+      },
     },
   },
   {
@@ -263,7 +271,7 @@ export async function executeMcpMethod(
 
         case "amstr_reclaim_storage":
           if (!token) throw new Error("Authentication required: provide an AMSTR MCP token to reclaim storage.");
-          result = await mcpEngine.reclaimStorage(token);
+          result = await mcpEngine.reclaimStorage(token, args.round_ids);
           break;
 
         case "amstr_verify_fairness":

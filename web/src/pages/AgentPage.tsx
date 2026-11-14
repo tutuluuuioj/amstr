@@ -688,7 +688,7 @@ export const AgentPage: React.FC<AgentPageProps> = ({
                     <button
                       onClick={() =>
                         copyToClipboard(
-                          `You have access to the AMSTR MCP Server on NEAR Testnet.\n- Use amstr_get_active_round to check the current round status, jackpot pools, and time remaining.\n- Use amstr_bet with your tile picks (0-24) and stake in NEAR (minimum 0.01 NEAR) to place confidential bets.\n- Use amstr_claim_payout to withdraw your winning prizes.\n- Use amstr_verify_fairness with any round_id to mathematically audit provable fairness proofs.`,
+                          `You have access to the AMSTR MCP Server on NEAR Testnet.\n- Use amstr_get_active_round to check current round status, jackpot pools, and time remaining.\n- Use amstr_bet with your tile picks (0-24) and stake in NEAR (min 0.01 NEAR). Note: each bet attaches 0.01 NEAR refundable storage deposit (e.g. 0.01 stake + 0.01 storage = 0.02 NEAR total).\n- Use amstr_reclaim_storage after rounds settle to reclaim your 0.01 NEAR storage deposit per entry back to your balance.\n- Use amstr_claim_payout to withdraw your winning prizes.\n- Use amstr_verify_fairness with any round_id to mathematically audit provable fairness proofs.`,
                           "agentPrompt"
                         )
                       }
@@ -700,9 +700,12 @@ export const AgentPage: React.FC<AgentPageProps> = ({
                   <div className="bg-[#1A1815] p-3 rounded text-[11px] text-[#EDE6DA] border border-[#2A2620] leading-relaxed">
                     You have access to the AMSTR MCP Server on NEAR Testnet.
                     <br />• Use <code className="text-[#C8763A]">amstr_get_active_round</code> to check
-                    the current round status, jackpot pools, and time remaining.
+                    the current round status, jackpot pools, and entry cost breakdown.
                     <br />• Use <code className="text-[#C8763A]">amstr_bet</code> with your tile picks
                     (0-24) and stake in NEAR (min 0.01 NEAR) to place confidential bets sealed in Intel TDX.
+                    <span className="text-[#8C8478]"> (Note: each bet attaches 0.01 NEAR refundable storage deposit).</span>
+                    <br />• Use <code className="text-[#C8763A]">amstr_reclaim_storage</code> to refund
+                    the 0.01 NEAR entry storage deposit from settled rounds back to your balance.
                     <br />• Use <code className="text-[#C8763A]">amstr_claim_payout</code> to withdraw
                     your winning prizes.
                     <br />• Use <code className="text-[#C8763A]">amstr_verify_fairness</code> to audit
