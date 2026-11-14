@@ -72,7 +72,7 @@ pub struct Config {
     pub min_stake: NearToken, // e.g. 0.01 NEAR
     pub max_stake: NearToken, // e.g. 20 NEAR
     pub max_players: u32,     // 200
-    pub deposit_window_blocks: u64, // ~60s
+    pub deposit_window_blocks: u64, // ~15 mins (900 blocks at ~1s/block)
     pub refund_timeout_blocks: u64, // ~10m (600 blocks)
     pub carryover_cap: NearToken,   // 100 NEAR
     pub paused: bool,
@@ -93,7 +93,7 @@ impl Default for Config {
             min_stake: NearToken::from_millinear(10), // 0.01 NEAR
             max_stake: NearToken::from_near(20),       // 20 NEAR
             max_players: 200,
-            deposit_window_blocks: 60,
+            deposit_window_blocks: 900, // ~15 minutes
             refund_timeout_blocks: 600,
             carryover_cap: NearToken::from_near(100),
             paused: false,

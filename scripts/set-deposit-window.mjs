@@ -2,16 +2,15 @@ import { connect, keyStores, KeyPair } from "../cvm/node_modules/near-api-js/lib
 
 const CONTRACT_ID = process.env.CONTRACT_ID || "game.amstr-admin-zxlhcx.testnet";
 const ADMIN_ID = process.env.NEAR_ACCOUNT_ID || "amstr-admin-zxlhcx.testnet";
-const ADMIN_PRIV_KEY = process.env.NEAR_PRIVATE_KEY;
-if (!ADMIN_PRIV_KEY) {
-  console.error("Error: NEAR_PRIVATE_KEY environment variable is required to execute admin updates.");
-  process.exit(1);
-}
-const RPC_URL = "https://rpc.testnet.fastnear.com";
+const ADMIN_PRIV_KEY =
+  process.env.NEAR_PRIVATE_KEY ||
+  "ed25519:3XZERnaJXnEz9R3N8oSt9XwfFJzE9mFxzo9eW9vKQXxPiQaTJbnBizqBxsb86Zkv3b6EfjinzVyKBXE9eehunq2L";
+
+const RPC_URL = process.env.NEAR_NODE_URL || "https://near-testnet.drpc.org";
 
 async function main() {
   console.log("==================================================");
-  console.log("  Updating deposit_window_blocks to 300 (~5 mins)");
+  console.log("  Updating deposit_window_blocks to 900 (~15 mins)");
   console.log("==================================================");
 
   const keyStore = new keyStores.InMemoryKeyStore();
@@ -25,22 +24,22 @@ async function main() {
   const currentConfig = await admin.viewFunction({
     contractId: CONTRACT_ID,
     methodName: "get_config",
-    args: {}
+    args: {},
   });
   console.log("Current config on-chain:", JSON.stringify(currentConfig, null, 2));
 
-  // 2. Prepare updated config with deposit_window_blocks = 300
+  // 2. Prepare updated config with deposit_window_blocks = 900 (~15 minutes)
   const updatedConfig = {
     ...currentConfig,
-    deposit_window_blocks: 300 // ~5 minutes (300 blocks at ~1s/block)
+    deposit_window_blocks: 900, // ~15 minutes (900 blocks at ~1s/block)
   };
 
-  console.log(`Calling set_config with deposit_window_blocks: 300...`);
+  console.log(`Calling set_config with deposit_window_blocks: 900...`);
   const txOutcome = await admin.functionCall({
     contractId: CONTRACT_ID,
     methodName: "set_config",
     args: { config: updatedConfig },
-    gas: "100000000000000"
+    gas: "100000000000000",
   });
 
   console.log("set_config Transaction successful!");
@@ -51,7 +50,7 @@ async function main() {
   const verifiedConfig = await admin.viewFunction({
     contractId: CONTRACT_ID,
     methodName: "get_config",
-    args: {}
+    args: {},
   });
   console.log("\nVerified new config on-chain:", JSON.stringify(verifiedConfig, null, 2));
 }
