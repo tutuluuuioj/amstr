@@ -1,9 +1,10 @@
 # AMSTR: Confidential Decentralized Mine Protocol
 
-> **The first MEV-resistant, provably fair on-chain mine protocol on NEAR Protocol, powered by Intel TDX Confidential Hardware Enclaves (Phala Cloud).**
+> **The first MEV-resistant, provably fair on-chain mine protocol on NEAR Protocol for human players and autonomous AI agents, powered by Intel TDX Confidential Hardware Enclaves (Phala Cloud) & Model Context Protocol (MCP).**
 
 [![NEAR Protocol](https://img.shields.io/badge/NEAR-Testnet-blue?logo=near)](https://testnet.nearblocks.io/address/game.amstr-admin-zxlhcx.testnet)
 [![Phala Intel TDX](https://img.shields.io/badge/Phala%20Cloud-Intel%20TDX%20Enclave-purple)](https://cloud.phala.network)
+[![MCP AI Agents](https://img.shields.io/badge/MCP-Autonomous%20AI%20Agents-emerald)](https://amstr-keeper.fly.dev/mcp)
 [![DCAP Attestation](https://img.shields.io/badge/DCAP%20Attestation-UpToDate%20(Verified)-brightgreen)](#-hardware-attestation--intel-tdx-verification)
 [![Provable Fairness](https://img.shields.io/badge/Provable%20Fairness-100%25%20Cryptographically%20Verified-success)](#-how-to-verify-provable-fairness)
 [![Rust Contract Tests](https://img.shields.io/badge/Rust%20Tests-53%2F53%20Passing-brightgreen)](contracts)
@@ -29,6 +30,7 @@ AMSTR combines **NEAR Protocol** with **Phala Cloud Intel TDX Secure Hardware En
 2. 🛡️ **Hardware Vault (Intel TDX Enclave)**: Your picks are only decrypted inside a tamper-proof hardware chip running in volatile memory *after* betting has permanently closed.
 3. 🎲 **Mathematically Unriggable (Provably Fair)**: The winning tile is calculated by combining a secret seed from the secure hardware chip with the unpredictable on-chain block hash from NEAR. It is mathematically impossible for anyone to rig or predict.
 4. 💰 **Non-Custodial Escrow & Liveness Timeout Protection**: Player funds are held by the audited NEAR smart contract, never by any centralized custodian. If the hardware enclave ever goes offline, reboots, or fails to settle within the designated deadline, automated on-chain timeout refund protection activates. You can execute a refund call directly from your wallet and reclaim 100% of your deposit with zero protocol fees.
+5. 🤖 **First-Class AI Agent & MCP Support**: Built from day one for both humans and autonomous AI agents. Any AI agent (Claude Desktop, Cursor, Grok, ChatGPT, or custom Python/TypeScript bots) can connect via our native Model Context Protocol (MCP) server to monitor rounds, formulate betting strategies, submit confidential encrypted bets, and claim winnings autonomously with strict bankroll isolation.
 
 ---
 
@@ -184,9 +186,42 @@ curl -s -X POST https://amstr-keeper.fly.dev/mcp \
   -d '{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "amstr_get_active_round", "arguments": {}}}'
 ```
 
+##### Option D: Autonomous Python Script (Zero Setup)
+You can run an automated bot in Python that plays and claims rounds continuously:
+```python
+import requests, json
+
+TOKEN = "amstr_mcp_YOUR_TOKEN_HERE"
+MCP_URL = "https://amstr-keeper.fly.dev/mcp"
+HEADERS = {"Content-Type": "application/json", "Authorization": f"Bearer {TOKEN}"}
+
+def call_mcp(tool_name, args={}):
+    payload = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": tool_name, "arguments": args}}
+    res = requests.post(MCP_URL, headers=HEADERS, json=payload).json()
+    return json.loads(res["result"]["content"][0]["text"])
+
+# 1. Check player status & auto-claim pending winnings or storage
+info = call_mcp("amstr_get_player_info")
+print(f"Agent Balance: {info['balance_near']} NEAR")
+
+if info.get("unclaimed_winnings", {}).get("count", 0) > 0:
+    print("Claiming winnings...", call_mcp("amstr_claim_payout"))
+
+if info.get("unclaimed_storage_near", 0) > 0:
+    print("Reclaiming storage deposit...", call_mcp("amstr_reclaim_storage"))
+
+# 2. Check active round & place confidential bet
+round_info = call_mcp("amstr_get_active_round")
+if round_info.get("status") == "Open":
+    print(f"Round #{round_info['round_id']} Open! Pot: {round_info['pot_near']} NEAR")
+    # Bet 0.05 NEAR split across tiles 7, 12, 18
+    bet_res = call_mcp("amstr_bet", {"tiles": [7, 12, 18], "stake_near": 0.05})
+    print(f"Bet placed! Explorer: {bet_res.get('explorer_url')}")
+```
+
 #### Step 3: Prompt Your Agent to Play!
-Simply say to your AI in chat:
-> *"Check the current AMSTR round. If it's open, place a 0.05 NEAR bet on tiles 7, 12, and 18. If we won the previous round, claim our payout!"*
+Simply say to your AI in chat (Claude, Cursor, Grok, etc.):
+> *"Check the current AMSTR round. If it's open, place a 0.05 NEAR bet on tiles 7, 12, and 18. If we won any previous rounds, claim our payouts and reclaim any refundable storage deposits!"*
 
 Your AI agent will query the MCP server, encrypt its picks, sign the NEAR transaction, and report the transaction explorer link back to you!
 
@@ -328,6 +363,34 @@ Every 25th round (`#25, #50, #75, #100...`), a special **Wildcat Round** trigger
 
 ### 4. Zero-Cost 1% Referral Program
 When a user specifies a referrer during bet deployment (`bind_referrer`), the referrer automatically earns **1% of all gross stakes**. This 1% comes directly out of the protocol's treasury fee — it costs the player $0 extra.
+
+---
+
+## 🪙 How Players & AI Agents Earn AMSTR Tokens
+
+The AMSTR token (NEP-141) has a strict lifetime hard cap of **2,000,000 AMSTR**. There is no pre-mine or private sale — tokens are minted on-chain strictly via gameplay and distributed through staking. Both human players and AI agents earn AMSTR through four mechanisms:
+
+### 1. Winning Round Bets (Proof-of-Play Mining)
+Every round that settles with winning bets calculates a dynamic token emission based on net round volume:
+$$\text{Emission}(V) = E_{\text{max}} \times \left(\frac{V}{V + K}\right) \times \left(\frac{1}{2^{\text{epoch}}}\right)$$
+* $E_{\text{max}} = 10 \text{ AMSTR}$ per round
+* $K = 50 \text{ NEAR}$ (saturation constant)
+* Epoch halving every 100,000 rounds
+* **75% of the newly minted AMSTR** is distributed **pro-rata** to players and AI agents who placed bets on the winning tile.
+
+### 2. Wildcat Rounds (Every 25th Round)
+Every 25 rounds (`round_id % 25 == 0`), a Wildcat Round triggers:
+* **60% of the entire round's winner AMSTR emission** is awarded as a single lump-sum jackpot bounty to **one lucky winning bettor** (chosen pseudorandomly using settlement entropy, weighted by stake).
+* The remaining 40% is shared pro-rata among other winning-tile bettors.
+
+### 3. Hitting Progressive Jackpots (Shard, Vein, Core)
+* 20% of every round's emission feeds the jackpot pools.
+* When settlement entropy hits a jackpot roll (Shard 1:300, Vein 1:1,000, Core 1:3,000), players on the winning tile also receive their proportional share of the accumulated AMSTR jackpot reserves.
+
+### 4. AMSTR Staking Dividends (Passive Yield)
+* Players and AI agents can deposit AMSTR into the staking contract (`staking.amstr-admin-zxlhcx.testnet`).
+* Automated protocol buybacks route **10% of all bought-back AMSTR into the staking pool** as continuous rewards for stakers (while 90% is burned 🔥).
+* Rewards accumulate continuously and can be claimed anytime via `claim_rewards`.
 
 ---
 
